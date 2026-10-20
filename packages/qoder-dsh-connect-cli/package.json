@@ -1,0 +1,45 @@
+{
+  "name": "qoder-dsh-connect-cli",
+  "version": "0.1.0",
+  "description": "Zero-dependency CLI and stdio MCP server for qoder-dsh-connect. Gives Qoder direct control of a local DeepSeek Harness host.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Asher Zeqi (https://github.com/lightporta)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lightporta/qoder-dsh-connect.git",
+    "directory": "packages/qoder-dsh-connect-cli"
+  },
+  "homepage": "https://github.com/lightporta/qoder-dsh-connect/tree/main/packages/qoder-dsh-connect-cli#readme",
+  "bugs": {
+    "url": "https://github.com/lightporta/qoder-dsh-connect/issues"
+  },
+  "bin": {
+    "qoder-dsh-connect": "./bin/qoder-dsh-connect.mjs"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./mcp": "./lib/mcp.js"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "keywords": [
+    "qoder",
+    "dsh",
+    "deepseek-harness",
+    "mcp",
+    "mcp-server",
+    "subagent"
+  ],
+  "files": [
+    "bin",
+    "lib",
+    "skill",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

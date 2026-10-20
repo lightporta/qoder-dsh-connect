@@ -1,0 +1,31 @@
+{
+  "name": "qoder-dsh-connect-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Connect Qoder and DeepSeek Harness: sub-agent delegation, plugin-market research, and a guarded plugin/skill lab.",
+  "license": "MIT",
+  "author": "Asher Zeqi (https://github.com/lightporta)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lightporta/qoder-dsh-connect.git"
+  },
+  "homepage": "https://github.com/lightporta/qoder-dsh-connect#readme",
+  "bugs": {
+    "url": "https://github.com/lightporta/qoder-dsh-connect/issues"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "node scripts/test.mjs",
+    "test:host": "node scripts/test.mjs host",
+    "test:cli": "node scripts/test.mjs cli",
+    "check": "node scripts/check.mjs",
+    "smoke": "node packages/dsh-plugin-qoder-connect/test/smoke.mjs",
+    "smoke:live": "node packages/dsh-plugin-qoder-connect/test/live.mjs"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  }
+}

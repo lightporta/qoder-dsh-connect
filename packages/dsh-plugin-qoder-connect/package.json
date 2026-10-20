@@ -1,0 +1,50 @@
+{
+  "name": "qoder-dsh-connect",
+  "version": "0.1.0",
+  "description": "Loopback-only control plane that turns DeepSeek Harness into a Qoder sub-agent, a plugin-market research source, and a guarded plugin/skill laboratory.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Asher Zeqi (https://github.com/lightporta)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lightporta/qoder-dsh-connect.git",
+    "directory": "packages/dsh-plugin-qoder-connect"
+  },
+  "homepage": "https://github.com/lightporta/qoder-dsh-connect/tree/main/packages/dsh-plugin-qoder-connect#readme",
+  "bugs": {
+    "url": "https://github.com/lightporta/qoder-dsh-connect/issues"
+  },
+  "icon": "assets/icon.svg",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "qoder",
+    "subagent",
+    "mcp",
+    "plugin-market",
+    "plugin-lab"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib",
+    "assets",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

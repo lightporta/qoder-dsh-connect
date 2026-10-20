@@ -1,0 +1,30 @@
+# Add this row to ~/.dsh/profiles/<profile>/cordis.patch.yml.
+# Keep the id identical to the installed bundle id.
+- id: qoder-dsh-connect
+  config:
+    profile: headless
+    concurrency: 2
+    timeoutMs: 900000
+    maxTimeoutMs: 3600000
+    tailLines: 60
+    retainRuns: 200
+    retainLearnings: 500
+    # token: 'replace-with-a-random-local-secret'
+    market:
+      indexes:
+        - url: https://awesome-dsh-plugin.com/plugins.json
+          title: Community dsh market
+      preferHost: true
+      allowAdHocIndexes: false
+      timeoutMs: 15000
+      cacheMs: 300000
+      maxBytes: 4194304
+    lab:
+      enabled: false
+      profiles:
+        - qoder-lab
+      allowCurrentProfile: false
+      currentProfile: web
+      # dshHome: 'C:/Users/<you>/.dsh'
+      # bin: 'C:/Users/<you>/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/lib/bin.js'
+      timeoutMs: 180000

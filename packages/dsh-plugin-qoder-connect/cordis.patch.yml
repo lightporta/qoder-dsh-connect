@@ -1,0 +1,17 @@
+# qoder-dsh-connect: host half of the Qoder <-> DeepSeek Harness bridge.
+#
+# Every field below is optional. Uncomment and edit the `config` block to
+# override the defaults; the full reference lives in README.md and docs/.
+- insert:
+    - id: qoder-dsh-connect
+      name: 'qoder-dsh-connect'
+      # config:
+      #   profile: headless
+      #   concurrency: 2
+      #   timeoutMs: 900000
+      #   token: ''                 # optional shared secret for the HTTP routes
+      #   market:
+      #     indexes: []             # explicit index URLs; no URL is assumed
+      #   lab:
+      #     enabled: false          # opt-in: profile writes are disabled by default
+      #     profiles: []            # explicit allowlist of lab profiles

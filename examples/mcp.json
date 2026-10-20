@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "qoder-dsh-connect": {
+      "command": "node",
+      "args": [
+        "C:/path/to/qoder-dsh-connect/packages/qoder-dsh-connect-cli/bin/qoder-dsh-connect.mjs",
+        "mcp"
+      ],
+      "env": {
+        "QODER_DSH_CONNECT_URL": "http://127.0.0.1:3080",
+        "QODER_DSH_CONNECT_TOKEN": ""
+      }
+    }
+  }
+}
