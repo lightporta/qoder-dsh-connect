@@ -1,5 +1,7 @@
 # 安装到 dsh Desktop profile
 
+[English](en/install-desktop.md) | 简体中文
+
 桌面端使用 `desktop` profile。插件格式与 Web 完全相同，只是 CLI 路径和 profile 名不同。
 
 ## 找到桌面端 CLI

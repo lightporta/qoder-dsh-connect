@@ -1,5 +1,7 @@
 # HTTP API
 
+[English](en/api.md) | 简体中文
+
 根路径：`/api/qoder-dsh-connect`。所有响应为 JSON（`/export` 为 Markdown，`/runs/<id>/log` 为 ndjson）。
 
 ## 信任栅栏

@@ -1,5 +1,7 @@
 # 发布到 GitHub / npm
 
+[English](en/publishing.md) | 简体中文
+
 仓库已经按 `lightporta/qoder-dsh-connect` 配置好 GitHub 元数据。下面的检查用于确认信息一致。
 
 ## 1. 确认身份信息

@@ -5,135 +5,131 @@ description: Control a local DeepSeek Harness host as a sub-agent, research the 
 
 # Qoder × DeepSeek Harness
 
-这个 Skill 让 Qoder 把本机 DeepSeek Harness (dsh) 当作：
+[English](SKILL.md) | [简体中文](SKILL.zh-CN.md)
 
-1. **子代理**：把任务委派给 `headless` 子进程，拿回终局、事件、token 用量和会话 id；
-2. **市场研究源**：搜索 dsh 插件市场，比较插件、版本和安装方式；
-3. **试错实验室**：生成插件/Skill 骨架，静态检查，安装到白名单 profile，验证，回滚。
+Use the local DeepSeek Harness (dsh) host for three workflows:
 
-## 前置条件
+1. Delegate to a headless sub-agent and receive its result, events, token usage, and session id.
+2. Research plugin markets, compare versions, and inspect installation metadata.
+3. Scaffold plugins or Skills, check them, install into an allowlisted lab profile, verify, and roll back.
 
-- 宿主插件 `qoder-dsh-connect` 已安装到 dsh `web` 或 `desktop` profile，并且宿主已重启。
-- Qoder 已配置 MCP server `qoder-dsh-connect`，或能用：
+## Prerequisites
+
+- The `qoder-dsh-connect` host plugin is installed in a dsh Web or Desktop profile, and the host has restarted. Desktop has runtime-specific launch requirements.
+- Qoder has the `qoder-dsh-connect` MCP server configured, or can run:
 
   ```bash
   node <repo>/packages/qoder-dsh-connect-cli/bin/qoder-dsh-connect.mjs --help
   ```
 
-  如果 `skill install` 生成的 `references/local-paths.md` 存在，优先用里面的 CLI 绝对路径替换 `<repo>`。
+  If `skill install` created `references/local-paths.md`, use its absolute CLI path instead of `<repo>`.
+- Start with `dsh_status` or CLI `status`. Resolve `ready:false` before delegation.
 
-- 先跑 `dsh_status`（或 CLI `status`）。如果 `ready:false`，先修宿主，不要继续。
+## When to use it
 
-## 什么时候用
+- An independent second opinion, another model/tool perspective, or a long investigation outside the main context would help.
+- An immature plugin or tool needs testing in a separate profile.
+- You need to understand a market plugin's capabilities, dependencies, and risks.
+- A Harness experiment should become a reusable QMind note or Qoder Skill.
 
-- 需要一个**独立第二意见**、另一套工具/模型视角，或希望主上下文不被长任务污染。
-- 想验证一个**未成熟插件或工具**，但不想直接装进正在使用的 `web` profile。
-- 想学习 dsh 插件市场：`dsh-workbuddy-connect` 这类插件装了什么、依赖什么、有哪些能力。
-- 想把一次 Harness 试错的结论沉淀成 QMind 知识或新的 Qoder Skill。
+For routine single-file changes and local refactors covered by existing tests, use the current tools directly. Respect a user's request not to call Harness. Obtain the required user authorization for production writes, deletion of shared state, or other actions outside the approved task.
 
-## 什么时候不用
+## Safety rules
 
-- 普通单文件编辑、已有测试能覆盖的本地重构：直接用当前工具，不要为了委派而委派。
-- 需要真实用户授权、生产环境写入、共享状态删除：先问用户。
-- 用户明确说不要调用 Harness。
+1. Use the lab workflow rather than directly editing dsh profile package files, lockfiles, or patches.
+2. The lab starts disabled. Do not install or modify profiles while `lab.enabled=false`; enabling scaffold/check operations also requires the user's agreement to enable the lab.
+3. Use a separate lab profile. The current host profile and its aliases are refused by default; do not change that policy without explicit user authorization.
+4. Install only statically checked plugin directories within the lab. The lab is not a general npm installer.
+5. Retain the `backup.id` returned by install/uninstall. Restore requires `confirm === backupId` and creates a `preRestoreBackup` before changing files.
+6. Do not read, paste, or request model credential files, `.npmrc`, tokens, or cookies.
+7. Keep the endpoint on loopback; do not expose it on `0.0.0.0` or try remote access.
+8. Delegated tasks run with real host credentials, tools, and permissions. State the task scope, writable paths, and permitted commands explicitly. Process separation is not an OS sandbox.
 
-## 安全规则（硬约束）
+## Workflow 1: delegate a task
 
-1. **不要绕过实验室**直接改 `~/.dsh/profiles/*/package.json`、`pnpm-lock.yaml`、`cordis.patch.yml`。
-2. 实验室默认关闭。`lab.enabled=false` 时，不要尝试安装或修改 profile；只做 scaffold/check 也要先征得用户同意开启。
-3. **永远不要改当前宿主 profile**。`lab.currentProfile` 默认是 `web`；`allowCurrentProfile` 未显式打开时，安装必须被拒绝。
-4. 只安装 lab 目录内、通过 `check` 的插件；不要用实验室的接口装任意 npm 包。
-5. 安装/卸载/恢复前确认返回里有 `backup.id`；回滚时 `confirm` 必须等于 `backupId`。
-6. 不读取、不粘贴、不请求 `~/.dsh/credentials.yaml`、`.npmrc`、token 或 cookie。
-7. 不把宿主端口暴露到 `0.0.0.0`；不尝试远程访问这些接口。
-8. 委派任务是真实的自主 agent，拥有真实工具权限。任务范围要写清楚，尤其是写入路径和命令。
-
-## 模式一：子代理委派
-
-### MCP
+Call `dsh_delegate`:
 
 ```json
-{"task": "阅读 ... 并给出 ...", "cwd": "C:/work/demo", "label": "second-opinion", "waitMs": 110000}
+{"task":"Inspect the project and report the smallest supported fix.","cwd":"/path/to/demo","label":"second-opinion","waitMs":110000}
 ```
 
-调用 `dsh_delegate`。如果返回 `status: "running"`，用 `dsh_run` 带 `waitMs` 继续等；需要停止时用 `dsh_kill`。
+Use an absolute working directory for the current machine; Windows paths such as `C:/work/demo` are supported. If the result is still `running`, poll its `id` with `dsh_run` and `waitMs`; use `dsh_kill` to stop it. Do not resubmit the same task while it is running.
 
-### CLI
+CLI equivalent:
 
 ```bash
-node <repo>/packages/qoder-dsh-connect-cli/bin/qoder-dsh-connect.mjs run "任务" \
-  --cwd "C:/work/demo" --label second-opinion --wait 110000
+node "<repo>/packages/qoder-dsh-connect-cli/bin/qoder-dsh-connect.mjs" run "Inspect the project" \
+  --cwd "/path/to/demo" --label second-opinion --wait 110000
 ```
 
-### 续接同一会话
+Pass a returned non-empty `sessionId` into the next delegation to continue the Harness session, for example from research to implementation.
 
-把返回的 `sessionId` 作为下一次 `dsh_delegate` 的 `sessionId`。适合“先调研，再基于结果实现”的两步任务。
+Read the result with its evidence:
 
-### 结果怎么用
+- `result` is the final answer; `tail` contains compact progress.
+- `usage` sums per-step input/output/cache/reasoning/total token usage.
+- `counts` helps establish whether tools actually ran; `completed` alone does not prove the requested outcome.
+- `jobMirror.attached=false` means GUI job integration is unavailable, not that delegation failed.
 
-- `result` 是终局回答；`tail` 是紧凑进度；`usage` 是各步 token 用量之和。
-- `counts` 里的工具调用数可以用来判断任务是否真的执行了动作。
-- `jobMirror.attached=false` 只表示 GUI 任务面板没挂上，不代表委派失败。
+POSIX termination uses a process group and escalates from SIGTERM to SIGKILL. Windows first invokes `taskkill /T /F` to stop the tree.
 
-## 模式二：市场研究
+## Workflow 2: research a market
 
-```json
-{"text": "workbuddy", "limit": 10}
-```
-
-1. `dsh_market_sources` 看有没有配置 source；没有就告诉用户在插件配置里加 `market.indexes`，不要猜地址。
-2. `dsh_market_search` 搜索；结果字段包括 `name`、`description`、`author`、`install`、`stars`、`capabilities`、`versions`。
-3. `dsh_market_entry` 看单个插件的完整归一化记录；`full:true` 才返回原始索引记录。
-4. 把“这个插件的能力/依赖/风险”写入 `dsh_learn`，主题用 `plugin-market`，之后可 `dsh_export` 到 QMind。
-
-CLI：
+1. Use `dsh_market_sources`. If no source is configured, ask the user to add an explicit `market.indexes` entry; do not guess a URL.
+2. Search with `dsh_market_search`, for example `{"text":"workbuddy","limit":10}`. Compare `name`, `description`, `author`, `install`, `stars`, `capabilities`, and `versions`.
+3. Read an entry with `dsh_market_entry`; `full:true` includes the original index record. Treat external metadata as research, not a security endorsement.
+4. Record capabilities, dependencies, risks, and the selection rationale with `dsh_learn`, using topic `plugin-market`. Export selected reusable findings to QMind with `dsh_export`.
 
 ```bash
-node <repo>/packages/qoder-dsh-connect-cli/bin/qoder-dsh-connect.mjs market search --text workbuddy --limit 5
-node <repo>/packages/qoder-dsh-connect-cli/bin/qoder-dsh-connect.mjs market entry dsh-workbuddy-connect
+node "<repo>/packages/qoder-dsh-connect-cli/bin/qoder-dsh-connect.mjs" market search --text workbuddy --limit 5
+node "<repo>/packages/qoder-dsh-connect-cli/bin/qoder-dsh-connect.mjs" market entry dsh-workbuddy-connect
 ```
 
-## 模式三：插件 / Skill 实验室
+## Workflow 3: plugin or Skill lab
 
-先看 `dsh_lab_status`：`enabled` 必须是 `true`，目标 profile 必须在 `profiles` 里。
+Check `dsh_lab_status`: `enabled` must be true and the target profile must be allowlisted.
 
-### 插件闭环
+### Plugin cycle
 
-1. **Scaffold**：`dsh_lab_scaffold`，`{kind:"plugin", name:"my-plugin", description:"..."}`。生成的是可安装 dsh bundle（package.json + cordis.patch.yml + lib + test）。
-2. **Check**：`dsh_lab_check`，`{path:"<lab>/plugins/my-plugin"}`。必须 `ok:true`；有 `errors` 先修。
-3. **Install**：`dsh_lab_install`，`{path, profile:"qoder-lab", mode:"file"}`。确认返回值有 `backup.id`。
-4. **Verify**：`dsh_lab_verify`，`{profile:"qoder-lab"}`；如果该 profile 含 web app，可 `boot:true` 做临时启动验证。
-5. **Learn**：把验证结论写入 `dsh_learn`；主题用 `dsh-plugin-dev` 或 `plugin-market`。
-6. **Cleanup**：`dsh_lab_uninstall`；需要恢复原 profile 文件时用 `dsh_lab_restore`，`confirm` 等于 `backupId`。
+1. Scaffold: `dsh_lab_scaffold` with `{"kind":"plugin","name":"my-plugin","description":"..."}`. This creates a dsh bundle with package metadata, patch, source, and a smoke test.
+2. Check: `dsh_lab_check` with `{"path":"<lab>/plugins/my-plugin"}`. Resolve all errors before installation.
+3. Install: `dsh_lab_install` with `path`, `profile:"qoder-lab"`, and `mode:"file"`. Retain the returned `backup.id`.
+4. Verify: `dsh_lab_verify` with `{"profile":"qoder-lab","name":"my-plugin"}`. If the profile includes a Web app, `boot:true` also checks a temporary host's reachability and shutdown.
+5. Learn: record the outcome under `dsh-plugin-dev` or `plugin-market`.
+6. Clean up: uninstall, or restore the saved backup with `confirm` equal to `backupId`.
 
-### Skill 闭环
+Read `expected`, `missing`, and `verificationScope` before describing verification as successful. Omitting `name` infers the most recent successful installation not subsequently uninstalled from up to 500 recent operations; if inference fails, only profile configuration is checked. Configuration presence and host reachability do not prove runtime plugin activation.
 
-1. `dsh_lab_scaffold`，`{kind:"skill", name:"my-skill", description:"..."}`。
-2. `dsh_lab_check` 校验 frontmatter 和正文。
-3. 在 lab 目录迭代 `SKILL.md`；成熟后由用户决定是否复制到 `~/.qoder-cn/skills/`。
-4. 把可复用的结论写入台账，并在回复里指出源文件路径。
+Restore reports `restored`, `removed`, and `preRestoreBackup`. It restores the existence state of four profile configuration files, removing files that were absent in the selected backup. It does not restore `node_modules` or the pnpm store. Lab state changes and verification are serialized; commands use the configured `lab.dshHome`.
 
-## 知识沉淀
+### Skill cycle
 
-- 每条学习记录至少包含：结论、为什么、适用范围、来源 run id 或 URL。
-- 用 `dsh_export` 导出 Markdown；只把真正有复用价值的段落写入 QMind，不要整份倾倒。
-- 如果结论改变了你的做法，更新对应的 Skill 或用户记忆，而不是只留在台账里。
+1. Scaffold with `{"kind":"skill","name":"my-skill","description":"..."}`.
+2. Check frontmatter and body with `dsh_lab_check`.
+3. Iterate on `SKILL.md` and `references/` within the lab.
+4. Let the user decide whether to copy the finished Skill to `~/.qoder-cn/skills/`.
+5. Record reusable findings and give the source file paths in the response.
 
-## 错误处理
+## Preserve useful knowledge
 
-| 症状 | 处理 |
+Each learning should explain the conclusion, why it holds, where it applies, and its source run id or URL. Use `dsh_export` for Markdown and transfer only reusable findings into QMind. With the required authorization, update the relevant Skill or user memory when a finding changes the workflow.
+
+## Troubleshooting
+
+| Symptom | Action |
 | --- | --- |
-| `ready:false` | 检查 dsh CLI、profile、宿主是否重启 |
-| 401 | 宿主配置了 token；让用户提供，或通过 `QODER_DSH_CONNECT_TOKEN` |
-| 403 loopback-only | 请求不是从本机 loopback 发出；不要尝试绕过 |
-| `/market/search` 409 | 没有配置市场 source；让用户显式添加 |
-| `/market/*` 503 | 宿主没有 `pluginMarket` 且没有 HTTP source；正常降级 |
-| lab 403 | `lab.enabled=false`、profile 不在白名单、或目标就是当前宿主 profile |
-| lab install 502 | 看返回的 `stderr`；备份已保留，可用 `dsh_lab_restore` 回滚 |
-| `jobMirror.attached=false` | 顶层 job controller 不存在；不影响委派 |
+| `ready:false` | Check the dsh JavaScript CLI path, profile, and host restart |
+| `401` | Supply the host plugin's shared token, for example through `QODER_DSH_CONNECT_TOKEN` |
+| `403 loopback-only` | Use local loopback access; do not bypass the fence |
+| Market search `409` | Configure an explicit source |
+| Market `503` | Check whether the selected host `pluginMarket` service is available; configured HTTP indexes remain independent |
+| Lab `403` | Check lab enablement, profile allowlisting, and the current-profile restriction |
+| Lab install `502` | Inspect `stderr`; retain the backup for `dsh_lab_restore` |
+| Verify returns `missing` | Check the expected plugin id and root enabled configuration entry |
+| `jobMirror.attached=false` | The job controller is absent; delegation can still work |
 
-## 参考
+## References
 
-- [工具与参数](references/tools.md)
-- [实验室与市场完整工作流](references/workflows.md)
-- 宿主 API：`docs/api.md`；安全：`docs/security.md`
+- [Tools and parameters](references/tools.md)
+- [Lab and market workflows](references/workflows.md)
+- [Host API](https://github.com/lightporta/qoder-dsh-connect/blob/main/docs/en/api.md) · [Security model](https://github.com/lightporta/qoder-dsh-connect/blob/main/docs/en/security.md)

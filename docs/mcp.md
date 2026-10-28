@@ -1,5 +1,7 @@
 # Qoder MCP 与 CLI
 
+[English](en/mcp.md) | 简体中文
+
 Qoder 侧有两种接入方式：推荐 MCP；没有 MCP 时用 CLI。两者共用同一个零依赖 HTTP 客户端。
 
 ## MCP 配置

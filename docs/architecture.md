@@ -1,5 +1,7 @@
 # 架构
 
+[English](en/architecture.md) | 简体中文
+
 ## 组件
 
 ```text

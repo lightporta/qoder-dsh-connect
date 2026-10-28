@@ -1,31 +1,36 @@
 # Contributing
 
-## 开发
+English | [简体中文](CONTRIBUTING.zh-CN.md)
+
+## Development
 
 ```bash
 npm test
 npm run check
 ```
 
-不需要 `npm install`；仓库没有第三方运行时依赖。
+No `npm install` step is needed: the project uses Node.js built-in modules and has no third-party runtime dependencies.
 
-## 代码约定
+## Code conventions
 
-- 只用 Node 内置模块；新增依赖前先说明理由。
-- 宿主插件代码放在 `packages/dsh-plugin-qoder-connect/lib`，客户端放在 `packages/qoder-dsh-connect-cli/lib`。
-- 任何启动子进程的地方必须用 argv 数组 + `shell: false`；任务/用户文本走 stdin 或参数值，不拼命令行。
-- 路由必须走 loopback 栅栏；新增写操作要评估备份/回滚。
-- 不读取、不记录、不返回凭据。
-- 注释只写“为什么”和非显而易见的约束，不复述代码。
+- Keep host code in `packages/dsh-plugin-qoder-connect/lib` and client code in `packages/qoder-dsh-connect-cli/lib`.
+- Use built-in modules; explain the need for any proposed dependency.
+- Start subprocesses with an argument array and `shell:false`. Send task text through stdin and never construct a shell command from user input.
+- Apply the loopback fence to routes. Review backup and rollback behavior for new write operations.
+- Keep credentials out of source, logs, API responses, and backups.
+- Explain non-obvious constraints in comments rather than restating the code.
 
-## 测试
+## Testing
 
-- 单元/集成测试使用 `node:test` 和 `test/fixtures/fake-dsh.mjs`，不消耗真实模型调用。
-- 真实 dsh 冒烟用 `npm run smoke`，会产生一次模型调用。
-- 对运行中宿主做 E2E 用 `node packages/dsh-plugin-qoder-connect/test/live.mjs <url>`。
+- Unit and integration tests use `node:test`, fake dsh processes, and local HTTP services without real model calls.
+- CI runs Node 22/24 on Ubuntu, Windows, and macOS. Canonicalize both sides when comparing filesystem paths across processes.
+- `npm run smoke` is a manual native Harness test and consumes model usage.
+- `node packages/dsh-plugin-qoder-connect/test/live.mjs <url>` runs E2E against an existing host.
 
-## 提交
+Treat automated fixture tests, native Harness execution, and Desktop integration as separate validation scopes.
 
-- 一个 PR 聚焦一个改动。
-- 先跑测试和 check。
-- 如果改动 API、配置、安全边界或兼容版本，同步更新 `docs/` 和 `CHANGELOG.md`。
+## Changes and commits
+
+Keep each PR focused. Run the relevant tests and static check before submitting. Update the English and Chinese documentation and changelog when changing APIs, configuration, security boundaries, or compatibility.
+
+Do not add local deployment simulations, credentials, or generated runtime directories to a commit. See [publishing](docs/en/publishing.md) for package checks.

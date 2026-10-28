@@ -1,48 +1,55 @@
-# MCP 工具与参数
+# MCP tools and parameters
 
-所有工具都通过 `qoder-dsh-connect` MCP server 调用。返回值通常是 JSON 文本；错误会用 `isError: true` 标记。
+[English](tools.md) | [简体中文](tools.zh-CN.md)
 
-| 工具 | 必填 | 常用可选 | 说明 |
+Call these tools through the `qoder-dsh-connect` MCP server. Results normally contain JSON text; execution failures use `isError: true`. Invalid tool names or arguments return a JSON-RPC parameter error before dispatch.
+
+| Tool | Required | Optional | Purpose |
 | --- | --- | --- | --- |
-| `dsh_status` | — | — | 宿主状态、引擎、并发、市场 source 数、实验室策略 |
-| `dsh_delegate` | `task` | `cwd`, `sessionId`, `timeoutMs`, `label`, `waitMs` | 委派一次任务；`waitMs` 默认 110000，宿主上限 120000 |
-| `dsh_runs` | — | `limit`, `live` | 本进程创建的运行，新的在前 |
-| `dsh_run` | `id` | `waitMs`, `full`, `tail` | 读取一次运行；`waitMs` 长轮询 |
-| `dsh_kill` | `id` | `reason` | 终止子进程树 |
-| `dsh_learn` | `title`, `body` | `topic`, `tags`, `source` | 追加学习记录 |
-| `dsh_learnings` | — | `topic`, `limit` | 读取学习记录 |
-| `dsh_export` | — | `topic`, `results`, `limit` | 返回 Markdown 台账 |
-| `dsh_market_sources` | — | — | 市场 source 和宿主 `pluginMarket` 可用性 |
-| `dsh_market_search` | — | `text`, `category`, `source`, `offset`, `limit`, `refresh`, `full` | 搜索已配置 source |
-| `dsh_market_entry` | `name` | `source`, `full` | 单个插件详情 |
-| `dsh_lab_status` | — | — | 实验室开关、白名单、目录、当前 profile |
-| `dsh_lab_scaffold` | `kind`, `name` | `description`, `force` | 生成 lab 插件或 Skill |
-| `dsh_lab_check` | `path` | — | 静态检查 lab 内的插件/Skill |
-| `dsh_lab_install` | `path`, `profile` | `mode` (`file`/`link`) | 备份后安装到白名单 profile |
-| `dsh_lab_uninstall` | `name`, `profile` | — | 备份后卸载 |
-| `dsh_lab_verify` | `profile` | `boot` | `dump-config` 或临时启动验证 |
-| `dsh_lab_restore` | `backupId`, `confirm` | — | `confirm` 必须等于 `backupId` |
-| `dsh_lab_ops` | — | `limit` | 实验室操作日志 |
+| `dsh_status` | — | — | Host readiness, engine, limits, markets, and lab policy |
+| `dsh_delegate` | `task` | `cwd`, `sessionId`, `timeoutMs`, `label`, `waitMs` | Delegate; default wait 110,000 ms, host cap 120,000 ms |
+| `dsh_runs` | — | `limit`, `live` | List runs created by this host, newest first |
+| `dsh_run` | `id` | `waitMs`, `full`, `tail` | Read a run, optionally long-polling |
+| `dsh_kill` | `id` | `reason` | Terminate the child process tree |
+| `dsh_learn` | `title`, `body` | `topic`, `tags`, `source` | Append a learning note |
+| `dsh_learnings` | — | `topic`, `limit` | Read notes; topic filtering precedes the count limit |
+| `dsh_export` | — | `topic`, `results`, `limit` | Return a Markdown ledger digest |
+| `dsh_market_sources` | — | — | Sources and host `pluginMarket` availability |
+| `dsh_market_search` | — | `text`, `category`, `source`, `offset`, `limit`, `refresh`, `full` | Search a configured source |
+| `dsh_market_entry` | `name` | `source`, `full` | Read one plugin entry |
+| `dsh_lab_status` | — | — | Lab enablement, allowlist, directories, and current profile |
+| `dsh_lab_scaffold` | `kind`, `name` | `description`, `force` | Generate a lab plugin or Skill; `kind` is `plugin` or `skill` |
+| `dsh_lab_check` | `path` | — | Statically check a plugin or Skill inside the lab |
+| `dsh_lab_install` | `path`, `profile` | `mode` (`file`/`link`) | Back up and install into an allowlisted profile |
+| `dsh_lab_uninstall` | `name`, `profile` | — | Back up and uninstall |
+| `dsh_lab_verify` | `profile` | `name`, `boot` | Check expected plugin configuration, optionally temporary host reachability |
+| `dsh_lab_restore` | `backupId`, `confirm` | — | Restore configuration; `confirm` must equal `backupId` |
+| `dsh_lab_ops` | — | `limit` | Read the lab operation journal |
 
-## CLI 对照
-
-MCP 不可用时，用同一个 client 的 CLI：
+## CLI equivalent
 
 ```bash
-node <repo>/packages/qoder-dsh-connect-cli/bin/qoder-dsh-connect.mjs <command> [options]
+node "<repo>/packages/qoder-dsh-connect-cli/bin/qoder-dsh-connect.mjs" "<command>" [options]
 ```
 
-连接参数：`--url`、`--token`、`--config`。命令映射见 `qoder-dsh-connect --help`。
+Connection options are `--url`, `--token`, and `--config`; `--request-timeout-ms` controls the HTTP timeout. Run `--help` for command mappings, including `lab verify --profile <profile> --name <plugin> [--boot]`.
 
-## 结果字段
+## Run fields
 
-运行视图的关键字段：
+- `id`, `label`, `status`, and `detail` identify the run and its outcome.
+- `result` is projected to at most 32 × 1024 JavaScript string units by default; MCP `full:true` requests the full result. HTTP/CLI use `full=1`/`--full`.
+- `sessionId` and `resumed` describe session continuation. Supply a non-empty `sessionId` to resume.
+- `counts.events/turns/steps/toolCalls/toolErrors` summarize activity.
+- `usage.inputTokens/outputTokens/cacheReadTokens/cacheWriteTokens/reasoningTokens/totalTokens` sum per-step usage.
+- `tail` contains compact progress, while `stderrTail` and `timedOut` help diagnose failures.
+- `jobMirror.attached/reason` describe optional GUI job integration.
 
-- `id`、`label`、`status`、`detail`
-- `result`（默认 32 KiB 投影；`full=1` 全量）
-- `sessionId`、`resumed`
-- `counts.events/turns/steps/toolCalls/toolErrors`
-- `usage.inputTokens/outputTokens/totalTokens`
-- `tail`（紧凑进度行）
-- `jobMirror.attached/reason`
-- `stderrTail`、`timedOut`
+## Verification and restore fields
+
+Pass `name` when verifying a specific plugin id. `configured` contains top-level enabled ids; `expected` and `missing` describe the expected entry. Without `name`, inference is limited to 500 recent lab operations, and may fall back to checking only profile configuration.
+
+`verificationScope` distinguishes profile/plugin configuration from host reachability. `boot:true` requires a profile with a Web app, performs configuration verification first, then probes and terminates a temporary host. The result includes `stopped`; configuration presence and reachability do not prove plugin activation.
+
+Restore returns `restored`, `removed`, and `preRestoreBackup`. `removed` lists profile configuration files absent in the selected backup that were removed from the current profile. The four-file backup excludes `node_modules` and the pnpm store.
+
+[Workflows](workflows.md) · [Skill](../SKILL.md)

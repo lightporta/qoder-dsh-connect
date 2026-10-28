@@ -1,5 +1,7 @@
 # 安全模型
 
+[English](en/security.md) | 简体中文
+
 ## 资产
 
 - 本机 dsh 的模型凭据、工具权限、文件系统访问；
@@ -43,7 +45,7 @@ Qoder / 本机进程
 - 任务文本走 stdin，不进入 argv。
 - 请求体、任务长度、行缓冲、stderr、日志尾部都有上限。
 - 墙钟超时、显式 kill、插件卸载三条路径都会终止子进程树；POSIX 下子进程进入独立进程组，
-  先 SIGTERM 再 SIGKILL；Windows 上 SIGTERM 后升级为 `taskkill /pid <pid> /T /F`。
+  先 SIGTERM 再 SIGKILL；Windows 首先执行 `taskkill /pid <pid> /T /F`，以便在父进程退出前发现后代。
 - 子进程继承宿主环境（包括模型凭据）。这是设计目标，也意味着委派任务必须是可信的。
 
 ## 市场

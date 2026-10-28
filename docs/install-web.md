@@ -1,5 +1,7 @@
 # 安装到 dsh Web profile
 
+[English](en/install-web.md) | 简体中文
+
 ## 前置检查
 
 ```bash

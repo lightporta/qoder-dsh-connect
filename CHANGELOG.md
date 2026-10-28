@@ -1,26 +1,29 @@
 # Changelog
 
+English | [简体中文](CHANGELOG.zh-CN.md)
+
 ## Unreleased — 2026-10-29
 
-- 修复 Windows CI 的 cwd 测试误判：实际路径与预期路径都经过 realpath，再比较目录，兼容 8.3 短路径和长路径；仍保留目录一致性检查。
+- Add English project and package READMEs, installation/reference guides, contribution and security policies, and bundled Qoder Skill documentation; preserve Chinese versions with language links.
+- Record the successful six-job CI matrix for commit `357d9e3`: Ubuntu, Windows, and macOS with Node 22/24, using fake dsh and local HTTP fixtures.
+- Fix a Windows CI assertion by canonicalizing both actual and expected working directories with `realpath`, preserving the directory check while accepting 8.3 short paths.
 
 ## Unreleased — 2026-10-28
 
-- 修复 MCP 中文字节帧、stdin 任务读取、长任务期间状态/终止请求阻塞，以及 HTTP 长轮询超时与断流错误处理。
-- 修复 npm 软链 CLI 发现、非对象事件崩溃、超长行处理、多步 token 统计、父进程先退出时的后代清理；台账保存任务与结果全文，读取等待已入队写入。
-- 实验室加强路径及软链边界，串行执行改写操作，恢复原始配置文件的存在状态；验证支持预期插件 id 并明确检查范围。
-- HTTP 在启动任务前校验查询参数，超限请求返回可读取的 413，严格匹配路径，运行列表先筛选再分页；完善 loopback IPv6 和同源检查。
-- 市场保留正确的原始记录，从 format-1 版本来源生成安装参数，兼容异常条目并限制缓存数量；静态检查排除本地模拟环境的外部运行时。
-- 补充回归测试，并更正用量统计、实验室验证、pnpm 前置条件和 macOS Desktop 启动限制的文档。
-- 第二轮修复实验室 DSH_HOME 不一致、配置检查异常与遗漏告警、客户端空配置崩溃、MCP 参数验证和空会话 id；按主题筛选先于数量限制，损坏台账行不再占用有效记录数量。
+- Fix MCP UTF-8 byte framing, stdin task input, status/cancellation during long tasks, HTTP long-poll budgets, and interrupted response handling.
+- Fix npm symlink CLI discovery, non-object event crashes, oversized output lines, per-step token totals, and process-tree cleanup after the leader exits. Preserve full tasks/results in the ledger and wait for queued writes before reading.
+- Strengthen lab path and symlink checks, serialize mutations, restore the original presence of profile files, and verify an expected plugin ID with an explicit verification scope.
+- Validate HTTP query parameters before starting tasks, return readable 413 responses, match exact routes, filter live runs before pagination, and improve IPv6 loopback and Origin checks.
+- Preserve matching raw market records, derive format-1 install targets from version sources, tolerate malformed entries, and bound the index cache. Exclude external simulation runtimes from source checks.
+- Add regression coverage and correct usage, lab verification, pnpm prerequisites, and macOS Desktop documentation.
+- Fix lab `DSH_HOME` consistency, malformed configuration checks, delayed activation warnings, null client configuration, MCP argument validation, and blank session IDs. Filter learning topics before limiting results and exclude broken rows from valid-record limits.
 
 ## 0.1.0 — 2026-10-20
 
-- 初版：dsh 宿主插件 + Qoder CLI/MCP + Skill。
-- 子代理委派：headless 子进程、会话续接、并发、超时、进程树终止、job 镜像降级。
-- 台账：运行摘要、事件日志、学习记录、Markdown 导出。
-- 市场：format-1 / 社区索引 / host pluginMarket，缓存、大小/超时限制。
-- 实验室：插件/Skill scaffold、静态检查、白名单 profile 安装、备份、dump-config/boot 验证、回滚。
-- 安全：loopback 栅栏、可选 token、无 shell、有界 IO、默认关闭实验室、诊断输出脱敏。
-- 测试：33 项，使用假 dsh CLI，不消耗真实模型调用。
-- 实测：dsh 0.2.1-rc.2 真实 headless 委派；独立临时 web profile 加载、status、委派、学习台账与 Markdown 导出通过。
+- Initial host plugin, Qoder CLI/stdio MCP server, and bundled Skill.
+- Native headless delegation, session continuation, concurrency, timeouts, process-tree cancellation, and optional job mirroring.
+- Run summaries, event logs, learning notes, and Markdown export.
+- Format-1/community/host market sources with caching, response limits, and timeouts.
+- Plugin/Skill scaffolding, static checks, allowlisted installation, profile backups, config/boot checks, and rollback.
+- Loopback checks, optional token authentication, argument-array process launching, bounded I/O, an opt-in lab, and diagnostic redaction.
+- 33 initial tests with a fake dsh CLI. The original release record includes native dsh `0.2.1-rc.2` delegation and a temporary web-profile integration run; the later audit skipped real model calls.

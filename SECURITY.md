@@ -1,23 +1,27 @@
 # Security Policy
 
-## 报告漏洞
+English | [简体中文](SECURITY.zh-CN.md)
 
-不要在公开 issue 中披露 token、凭据、可利用细节或用户数据。请使用 GitHub Security Advisory（私密报告）或直接联系维护者。
+## Reporting a vulnerability
 
-## 范围
+Keep tokens, credentials, user data, and exploit details out of public issues. Use GitHub's private vulnerability reporting if available, or contact the [maintainer](https://github.com/lightporta) privately.
 
-重点关注：
+## Scope
 
-- loopback/token 栅栏绕过；
-- 命令注入或 shell 逃逸；
-- 实验室路径越界或任意 profile 写入；
-- 子进程未终止/孤儿进程；
-- 市场响应导致的资源耗尽；
-- 凭据泄漏到日志、台账、响应。
+Relevant issues include:
 
-## 运行建议
+- Bypassing loopback or token authentication.
+- Command injection or unintended shell execution.
+- Lab path escapes or writes to unauthorized profiles.
+- Processes that remain alive after cancellation.
+- Resource exhaustion through market responses.
+- Credentials leaking into logs, ledgers, responses, or backups.
 
-- 不要把 dsh host 暴露到 `0.0.0.0` 或公网。
-- 给插件配置随机 `token`，不要提交到 Git。
-- 实验室使用独立 profile；不要打开 `allowCurrentProfile`，除非你明确接受重启与风险。
-- 委派任务视为拥有真实文件/命令权限的 agent；只给它必要的范围。
+## Operating guidance
+
+- Keep the dsh host on loopback.
+- Use a random plugin token and keep it out of Git.
+- Use a separate lab profile. Enable `allowCurrentProfile` only with an explicit understanding of the restart and write implications.
+- Scope delegated tasks carefully: Harness uses real file and tool permissions inherited from the host.
+
+See the [security model](docs/en/security.md) for the implemented controls and their limits.
