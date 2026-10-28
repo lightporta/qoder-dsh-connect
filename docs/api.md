@@ -5,7 +5,7 @@
 ## 信任栅栏
 
 - 套接字地址必须是 `127.0.0.0/8`、`::1` 或 `::ffff:127.0.0.0/8`。
-- `Host` 头必须是 `localhost`、`[::1]` 或 127/8。
+- `Host` 头必须是 `localhost`、`[::1]`、127/8 或对应的 IPv4-mapped IPv6 回环地址。
 - 拒绝 `sec-fetch-site: cross-site`；有 `Origin` 时必须与 Host 同源。
 - `X-Forwarded-For` 从不被信任。
 - 配置了 `token` 时，还必须提供 `Authorization: Bearer <token>`、`x-qoder-token: <token>` 或 `?token=<token>`。
@@ -72,8 +72,10 @@
 ```
 
 - `wait` 也可以放在 query。query 优先。
+- 提供 `sessionId` 时必须为非空白字符串；不续接时省略该字段。
 - 在 `wait` 内结束返回 `200` + 终态视图；仍在运行返回 `202` + 当前视图。
 - 并发达到上限返回 `429`。
+- JSON 请求体必须是对象；参数校验失败不会启动任务。请求体超过 64 KiB 返回 `413`。
 
 ### `GET /runs`
 
@@ -85,7 +87,7 @@
 
 - `wait` 长轮询，最大 120000 ms；仍运行返回 `202`。
 - `raw=1` 不携带 `tail`。
-- `full=1` 返回完整 `result`（默认投影 32 KiB）。
+- `full=1` 返回完整 `result` 和 `task`（默认分别投影为 32 KiB 和 2000 字符）。运行台账保存两者全文。
 
 ### `GET /runs/<id>/log`
 
@@ -107,7 +109,7 @@
 | `result` | 终局文本（32 KiB 投影） |
 | `sessionId` / `resumed` | 当前/续接的会话 id |
 | `counts` | `events/turns/steps/toolCalls/toolErrors` |
-| `usage` | 累计 token 快照 |
+| `usage` | 各步 token 用量之和，包含 `reasoningTokens` |
 | `tail` | 紧凑进度行 |
 | `jobMirror` | `{attached, id?}` 或 `{attached:false, reason}` |
 | `stderrTail` | 子进程 stderr 尾部（最多 4 KiB） |
@@ -118,6 +120,8 @@
 ### `GET /learnings`
 
 `?limit=1..500&topic=...`
+
+指定 `topic` 时先筛选匹配记录，再取最新 `limit` 条；读取仍受台账的字节预算限制。
 
 ### `POST /learnings`
 
@@ -136,6 +140,8 @@
 ### `GET /export`
 
 `?topic=&results=1&limit=50`，返回 `text/markdown` 台账。
+
+学习记录的主题筛选同样在数量限制前执行。
 
 ## 市场
 
@@ -210,12 +216,14 @@
 ### `POST /lab/verify`
 
 ```json
-{ "profile": "qoder-lab", "boot": false }
+{ "profile": "qoder-lab", "name": "my-plugin", "boot": false }
 ```
 
-`boot:false`：`dsh --profile <profile> --dump-config`，返回 `configured`、`warnings`、`ok`。
+`boot:false`：运行 `dsh --profile <profile> --dump-config`，返回顶层未禁用条目的 `configured`、`expected`、`missing`、`warnings`、`verificationScope` 和 `ok`。指定 `name` 时，缺少该插件 id 会返回 `ok:false`。
 
-`boot:true`：临时启动 `dsh --profile <profile> --no-open --port 0`，解析 `dsh web: http://…`，发一个 GET，然后终止进程树。目标 profile 必须包含 web app/webServer。
+省略 `name` 时，从最近 500 条实验室操作中推断该 profile 最近一次未卸载的成功安装；无法推断时，只验证 profile 配置。需要验证特定插件时应显式传 `name`。
+
+`boot:true`：先做配置验证，通过后临时启动 `dsh --profile <profile> --no-open --port 0`，解析 `dsh web: http://…`，发一个 GET，然后终止进程树。目标 profile 必须包含 web app/webServer。配置存在和 host 可访问均不证明插件已在运行时激活。
 
 ### `POST /lab/restore`
 
@@ -223,7 +231,7 @@
 { "backupId": "20261020-…-qoder-connect-qoder-lab-abc123", "confirm": "同上" }
 ```
 
-恢复前会再备份当前状态。`confirm` 必须等于 `backupId`。
+恢复前会再备份当前状态。`confirm` 必须等于 `backupId`。恢复四个配置文件的原始存在状态；备份时不存在、后来新增的文件会删除，并列在 `removed` 中。
 
 ## 插件内服务
 

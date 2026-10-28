@@ -230,3 +230,66 @@ test('host pluginMarket indexes are exposed alongside HTTP sources', async () =>
   assert.equal(entry.author, 'bob')
   assert.equal(await market.entry({ name: 'missing' }), undefined)
 })
+
+test('market skips invalid records without mismatching full raw records', async t => {
+  const raw = { name: 'valid-plugin', versions: [null, { version: '1.0.0', source: { type: 'npm' } }] }
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ format: 1, plugins: [null, 42, {}, raw] }))
+  const market = createMarket({ config: { indexes: ['https://example.test/index.json'], cacheMs: 0, timeoutMs: 1000, maxBytes: 4096 } })
+  const result = await market.search({ offset: 0, limit: 10, full: true })
+  assert.equal(result.count, 1)
+  assert.deepEqual(result.entries[0].raw, raw)
+  assert.deepEqual(result.entries[0].install, { spec: 'valid-plugin@1.0.0' })
+  assert.deepEqual(result.entries[0].source, { type: 'npm' })
+})
+
+test('format-1 derives npm and pinned Git install targets from version sources', async t => {
+  const commit = 'a'.repeat(40)
+  const npmSource = { type: 'npm', registry: 'https://registry.example.test' }
+  const gitSource = { type: 'git', url: 'https://github.com/example/plugins', commit, path: 'packages/plugin' }
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ format: 1, plugins: [
+    { name: '@example/npm-plugin', versions: [{ version: '2.0.0', publishTimestamp: 1767225600, source: npmSource, engines: {} }] },
+    { name: 'git-plugin', versions: [{ version: '1.0.0', source: gitSource, engines: {} }] },
+  ] }))
+  const market = createMarket({ config: { indexes: ['https://example.test/index.json'], cacheMs: 0, timeoutMs: 1000, maxBytes: 4096 } })
+  const npm = await market.entry({ name: '@example/npm-plugin' })
+  assert.deepEqual(npm.install, { spec: '@example/npm-plugin@2.0.0', registry: npmSource.registry })
+  assert.equal(npm.versions[0].publishedAt, 1767225600)
+  const git = await market.entry({ name: 'git-plugin' })
+  assert.deepEqual(git.install, { spec: `git+https://github.com/example/plugins.git#${commit}&path:/packages/plugin` })
+  assert.deepEqual(git.versions[0].source, gitSource)
+})
+
+test('market evicts old ad-hoc indexes from its bounded cache', async t => {
+  const requested = []
+  t.mock.method(globalThis, 'fetch', async url => {
+    requested.push(url)
+    return Response.json({ plugins: [{ name: 'cached-plugin' }] })
+  })
+  const market = createMarket({ config: { indexes: [], allowAdHocIndexes: true, cacheMs: 60000, timeoutMs: 1000, maxBytes: 4096 } })
+  const query = index => ({ url: `https://example.test/${index}.json`, offset: 0, limit: 10 })
+  for (let index = 0; index < 17; index += 1) await market.search(query(index))
+  await market.search(query(16))
+  assert.equal(requested.length, 17, 'recent indexes should use the cache')
+  await market.search(query(0))
+  assert.equal(requested.length, 18, 'the oldest index must be fetched again')
+})
+
+test('malformed version sources do not produce unusable install targets', async t => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ format: 1, plugins: [
+    { name: 'missing-version', versions: [{ source: { type: 'npm' } }] },
+    { name: 'unpinned-git', versions: [{ version: '1.0.0', source: { type: 'git', url: 'https://example.test/repo', commit: '' } }] },
+    { name: 'bad-git-path', versions: [{ version: '1.0.0', source: { type: 'git', url: 'https://example.test/repo', commit: 'a'.repeat(40), path: '../outside' } }] },
+  ] }))
+  const market = createMarket({ config: { indexes: ['https://example.test/index.json'], cacheMs: 0, timeoutMs: 1000, maxBytes: 4096 } })
+  const result = await market.search({ offset: 0, limit: 10 })
+  assert.equal(result.count, 3)
+  assert.ok(result.entries.every(entry => entry.install === undefined))
+})
+
+test('market reports failed response streams as upstream errors', async t => {
+  t.mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream({
+    start(controller) { controller.error(new Error('connection terminated')) },
+  })))
+  const market = createMarket({ config: { indexes: ['https://example.test/index.json'], cacheMs: 0, timeoutMs: 1000, maxBytes: 4096 } })
+  await assert.rejects(() => market.search({ offset: 0, limit: 10 }), error => error.status === 502 && /connection terminated/.test(error.message))
+})

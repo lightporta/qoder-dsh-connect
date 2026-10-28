@@ -1,4 +1,32 @@
 const CONDENSED_VERSIONS = 3
+const MAX_CACHED_INDEXES = 16
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function versionsOf(entry) {
+  return Array.isArray(entry.versions) ? entry.versions.filter(isRecord) : []
+}
+
+function installTarget(name, version) {
+  if (version?.install !== undefined) return version.install
+  if (typeof name !== 'string') return undefined
+  const source = version?.source
+  if (source?.type === 'npm' && typeof version.version === 'string' && version.version.length > 0
+    && (source.registry === undefined || httpUrl(source.registry) !== undefined)) {
+    return { spec: `${name}@${version.version}`, ...(source.registry === undefined ? {} : { registry: source.registry }) }
+  }
+  if (source?.type === 'git' && httpUrl(source.url) !== undefined
+    && typeof source.commit === 'string' && /^[a-f0-9]{40}$/.test(source.commit)
+    && (source.path === undefined || (typeof source.path === 'string' && source.path.length > 0
+      && source.path.split('/').every(part => part !== '' && part !== '.' && part !== '..')
+      && !/[\\#&]/.test(source.path)))) {
+    const repository = source.url.endsWith('.git') ? source.url : `${source.url}.git`
+    return { spec: `git+${repository}#${source.commit}${source.path === undefined ? '' : `&path:/${source.path}`}` }
+  }
+  return undefined
+}
 
 function text(value) {
   if (typeof value === 'string') return value
@@ -28,13 +56,14 @@ function httpUrl(value) {
 }
 
 function normalizeVersions(entry, selected) {
-  const listed = Array.isArray(entry.versions) ? entry.versions : []
+  const listed = versionsOf(entry)
   return listed.slice(0, CONDENSED_VERSIONS).map(candidate => ({
     version: candidate.version,
     publishedAt: candidate.publishTimestamp ?? candidate.publishedAt,
     enginesDsh: candidate.engines?.dsh,
     compatible: candidate.compatibility?.compatible,
     requirements: candidate.compatibility?.compatible === false ? candidate.compatibility.requirements : undefined,
+    source: candidate.source,
   })).concat(selected !== undefined && listed.length === 0 ? [{
     version: selected,
     publishedAt: entry.added,
@@ -45,7 +74,7 @@ function normalizeVersions(entry, selected) {
 }
 
 function normalizeFormatOne(entry) {
-  const versions = Array.isArray(entry.versions) ? entry.versions : []
+  const versions = versionsOf(entry)
   const defaultVersion = entry.defaultVersion ?? versions[0]?.version
   const chosen = versions.find(candidate => candidate.version === defaultVersion) ?? versions[0]
   return {
@@ -60,8 +89,8 @@ function normalizeFormatOne(entry) {
     labels: entry.metadata?.labels ?? [],
     capabilities: entry.metadata?.capabilities,
     defaultVersion,
-    install: chosen?.install,
-    source: entry.source,
+    install: installTarget(entry.name, chosen),
+    source: chosen?.source ?? entry.source,
     versionCount: versions.length,
     versions: normalizeVersions(entry, defaultVersion),
   }
@@ -93,8 +122,9 @@ function normalizeCommunity(entry) {
 }
 
 function normalizeHost(entry) {
-  const versions = Array.isArray(entry.versions) ? entry.versions : []
-  const byDefault = versions.find(candidate => candidate.version === entry.defaultVersion)
+  const versions = versionsOf(entry)
+  const defaultVersion = entry.defaultVersion ?? versions[0]?.version
+  const byDefault = versions.find(candidate => candidate.version === defaultVersion) ?? versions[0]
   return {
     name: entry.name,
     title: text(entry.title) ?? entry.name,
@@ -105,11 +135,12 @@ function normalizeHost(entry) {
     category: entry.metadata?.category,
     keywords: entry.metadata?.keywords ?? [],
     labels: entry.metadata?.labels ?? [],
-    defaultVersion: entry.defaultVersion,
+    defaultVersion,
     installation: entry.installation,
-    install: byDefault?.install,
+    install: installTarget(entry.name, byDefault),
+    source: byDefault?.source,
     versionCount: versions.length,
-    versions: normalizeVersions(entry, entry.defaultVersion),
+    versions: normalizeVersions(entry, defaultVersion),
   }
 }
 
@@ -263,7 +294,11 @@ export function createMarket({ ctx, config, warn = () => {} }) {
 
   async function loadHttp(source, refresh) {
     const cached = cache.get(source.url)
-    if (refresh !== true && cached !== undefined && Date.now() - cached.fetchedAt < config.cacheMs) return cached
+    if (refresh !== true && cached !== undefined && Date.now() - cached.fetchedAt < config.cacheMs) {
+      cache.delete(source.url)
+      cache.set(source.url, cached)
+      return cached
+    }
 
     let response
     try {
@@ -278,17 +313,26 @@ export function createMarket({ ctx, config, warn = () => {} }) {
       throw failure
     }
     if (!response.ok) {
+      await response.body?.cancel().catch(() => {})
       const error = new Error(`market index returned HTTP ${response.status}`)
       error.status = 502
       throw error
     }
     const declared = Number(response.headers.get('content-length') ?? 0)
     if (Number.isFinite(declared) && declared > config.maxBytes) {
+      await response.body?.cancel().catch(() => {})
       const error = new Error(`market index is larger than ${config.maxBytes} bytes`)
       error.status = 502
       throw error
     }
-    const buffer = await readBounded(response, config.maxBytes)
+    let buffer
+    try {
+      buffer = await readBounded(response, config.maxBytes)
+    } catch (error) {
+      const failure = new Error(`market index read failed: ${error instanceof Error ? error.message : String(error)}`)
+      failure.status = 502
+      throw failure
+    }
 
     let document
     try {
@@ -304,10 +348,13 @@ export function createMarket({ ctx, config, warn = () => {} }) {
       error.status = 502
       throw error
     }
-    const normalized = detected.entries
-      .map(entry => detected.format === 'format-1' ? normalizeFormatOne(entry) : normalizeCommunity(entry))
-      .filter(entry => typeof entry.name === 'string' && entry.name.length > 0)
-      .map((entry, index) => ({ ...entry, _index: index, raw: detected.entries[index] }))
+    const normalized = []
+    for (const [index, raw] of detected.entries.entries()) {
+      if (!isRecord(raw)) continue
+      const entry = detected.format === 'format-1' ? normalizeFormatOne(raw) : normalizeCommunity(raw)
+      if (typeof entry.name !== 'string' || entry.name.length === 0) continue
+      normalized.push({ ...entry, _index: index, raw })
+    }
 
     const record = {
       source,
@@ -316,7 +363,12 @@ export function createMarket({ ctx, config, warn = () => {} }) {
       title: text(document.title) ?? source.title,
       entries: normalized,
     }
-    cache.set(source.url, record)
+    for (const [url, entry] of cache) {
+      if (Date.now() - entry.fetchedAt >= config.cacheMs) cache.delete(url)
+    }
+    cache.delete(source.url)
+    if (config.cacheMs > 0) cache.set(source.url, record)
+    while (cache.size > MAX_CACHED_INDEXES) cache.delete(cache.keys().next().value)
     return record
   }
 
@@ -365,7 +417,7 @@ export function createMarket({ ctx, config, warn = () => {} }) {
       limit: query.limit,
       ...(query.refresh === true ? { refresh: true } : {}),
     })
-    const entries = Array.isArray(result.entries) ? result.entries : []
+    const entries = Array.isArray(result.entries) ? result.entries.filter(isRecord) : []
     return {
       source,
       format: 'host',

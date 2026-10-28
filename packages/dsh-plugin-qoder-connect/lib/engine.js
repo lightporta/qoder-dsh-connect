@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { statSync } from 'node:fs'
+import { realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { isAbsolute } from 'node:path'
 import { compact, createAggregate, fold } from './events.js'
@@ -22,9 +22,14 @@ export function resolveDshBin(configured) {
   const candidates = []
   if (typeof configured === 'string' && configured.length > 0) candidates.push({ path: configured, source: 'config' })
 
-  const entry = process.argv[1]
-  if (typeof entry === 'string' && /[\\/]bin\.js$/.test(entry) && entry.includes('@deepseek-ai')) {
-    candidates.push({ path: entry, source: 'host-entry' })
+  try {
+    // npm's global dsh command is normally a symlink, preserved in argv[1].
+    const entry = realpathSync(process.argv[1])
+    if (/[\\/]@deepseek-ai[\\/]dsh[\\/]lib[\\/]bin\.js$/.test(entry)) {
+      candidates.push({ path: entry, source: 'host-entry' })
+    }
+  } catch {
+    // Embedded hosts may have no filesystem CLI entry.
   }
 
   try {
@@ -37,7 +42,8 @@ export function resolveDshBin(configured) {
   for (const candidate of candidates) {
     if (candidate.path === undefined) continue
     try {
-      if (statSync(candidate.path).isFile()) return { bin: candidate.path, source: candidate.source, reason: undefined }
+      const bin = realpathSync(candidate.path)
+      if (statSync(bin).isFile()) return { bin, source: candidate.source, reason: undefined }
     } catch {
       // Try the next candidate.
     }
@@ -70,7 +76,7 @@ export function createEngine({ config, store, warn, jobs }) {
       id: run.id,
       label: run.label,
       status: run.status,
-      task: run.task.length > 2000 ? `${run.task.slice(0, 2000)}…` : run.task,
+      task: !full && run.task.length > 2000 ? `${run.task.slice(0, 2000)}…` : run.task,
       taskChars: run.task.length,
       cwd: run.cwd,
       profile: run.profile,
@@ -119,7 +125,7 @@ export function createEngine({ config, store, warn, jobs }) {
       event = { type: 'raw', text: line }
     }
     fold(run.aggregate, event)
-    if (event.type === 'text' && typeof event.text === 'string') {
+    if (event?.type === 'text' && typeof event.text === 'string') {
       run.textBuffer = (run.textBuffer + event.text).slice(-TEXT_BUFFER_CHARS)
     }
     const rendered = compact(event)
@@ -181,7 +187,7 @@ export function createEngine({ config, store, warn, jobs }) {
       result: run.aggregate.finalText ?? (run.textBuffer.length > 0 ? run.textBuffer : undefined),
     })
 
-    void store.recordRun(view(run))
+    void store.recordRun(view(run, { full: true }))
   }
 
   function killRun(run, reason) {
@@ -208,8 +214,8 @@ export function createEngine({ config, store, warn, jobs }) {
       const { task, sessionId, label } = request
       if (typeof task !== 'string' || task.trim().length === 0) return { error: 'task must be a non-empty string', status: 400 }
       if (task.length > MAX_TASK_CHARS) return { error: `task too long (max ${MAX_TASK_CHARS} characters)`, status: 413 }
-      if (sessionId !== undefined && (typeof sessionId !== 'string' || sessionId.length > MAX_SESSION_ID_CHARS)) {
-        return { error: `sessionId must be a string of at most ${MAX_SESSION_ID_CHARS} characters`, status: 400 }
+      if (sessionId !== undefined && (typeof sessionId !== 'string' || sessionId.trim().length === 0 || sessionId.length > MAX_SESSION_ID_CHARS)) {
+        return { error: `sessionId must be a non-empty string of at most ${MAX_SESSION_ID_CHARS} characters`, status: 400 }
       }
 
       const resolved = resolveCwd(request.cwd)
@@ -326,17 +332,26 @@ export function createEngine({ config, store, warn, jobs }) {
       }
 
       let buffer = ''
+      let discardingLine = false
       child.stdout.setEncoding('utf8')
       child.stdout.on('data', chunk => {
-        buffer += chunk
-        let newline = buffer.indexOf('\n')
-        while (newline >= 0) {
-          const line = buffer.slice(0, newline)
-          buffer = buffer.slice(newline + 1)
-          if (line.trim().length > 0) accept(run, line)
-          newline = buffer.indexOf('\n')
+        let offset = 0
+        while (offset < chunk.length) {
+          const newline = chunk.indexOf('\n', offset)
+          if (!discardingLine) {
+            buffer += chunk.slice(offset, newline < 0 ? undefined : newline)
+            if (Buffer.byteLength(buffer) > MAX_LINE_BUFFER_BYTES) {
+              buffer = ''
+              discardingLine = true
+              accept(run, JSON.stringify({ type: 'proxy/output-discarded', maxBytes: MAX_LINE_BUFFER_BYTES }))
+            }
+          }
+          if (newline < 0) break
+          if (!discardingLine && buffer.trim().length > 0) accept(run, buffer)
+          buffer = ''
+          discardingLine = false
+          offset = newline + 1
         }
-        if (buffer.length > MAX_LINE_BUFFER_BYTES) buffer = ''
       })
 
       child.stderr.setEncoding('utf8')
@@ -352,7 +367,7 @@ export function createEngine({ config, store, warn, jobs }) {
         settle(run, child.exitCode, child.signalCode)
       })
       child.on('close', (code, signal) => {
-        if (buffer.trim().length > 0) accept(run, buffer.trim())
+        if (!discardingLine && buffer.trim().length > 0) accept(run, buffer.trim())
         settle(run, code, signal)
       })
 
@@ -380,8 +395,9 @@ export function createEngine({ config, store, warn, jobs }) {
 
     view,
 
-    list(limit) {
-      return [...runs.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, limit).map(run => view(run))
+    list(limit, { liveOnly = false } = {}) {
+      return [...runs.values()].filter(run => !liveOnly || run.status === 'running')
+        .sort((a, b) => b.createdAt - a.createdAt).slice(0, limit).map(run => view(run))
     },
 
     liveCount() {

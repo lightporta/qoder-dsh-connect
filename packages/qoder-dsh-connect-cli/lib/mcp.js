@@ -1,4 +1,6 @@
 const PROTOCOL_VERSION = '2024-11-05'
+const MAX_MESSAGE_BYTES = 1024 * 1024
+const MAX_HEADER_BYTES = 8192
 
 const objectSchema = (properties, required = []) => ({
   type: 'object',
@@ -210,8 +212,9 @@ export function toolDefinitions() {
       inputSchema: objectSchema({
         profile: string('Allowlisted dsh profile.'),
         boot: boolean('Start a temporary host to verify the profile loads.'),
+        name: string('Expected plugin id; defaults to the most recent installed lab plugin.'),
       }, ['profile']),
-      handler: async (client, args) => client.labVerify({ profile: args.profile, boot: args.boot === true }),
+      handler: async (client, args) => client.labVerify({ profile: args.profile, boot: args.boot === true, name: args.name }),
     },
     {
       name: 'dsh_lab_restore',
@@ -234,21 +237,61 @@ export function toolDefinitions() {
 }
 
 function toolResult(value) {
-  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? null, null, 2)
   return { content: [{ type: 'text', text }] }
+}
+
+// Validate the schema subset used by toolDefinitions before dispatching HTTP writes.
+function argumentError(schema, value, path = 'arguments') {
+  const type = Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value
+  if (type !== schema.type || (type === 'number' && !Number.isFinite(value))) {
+    return `${path} must be ${schema.type}`
+  }
+  if (schema.enum !== undefined && !schema.enum.includes(value)) {
+    return `${path} must be one of: ${schema.enum.join(', ')}`
+  }
+  if (type === 'object') {
+    for (const key of schema.required ?? []) {
+      if (!Object.hasOwn(value, key)) return `${path}.${key} is required`
+    }
+    for (const [key, item] of Object.entries(value)) {
+      if (!Object.hasOwn(schema.properties, key)) {
+        if (schema.additionalProperties === false) return `unknown ${path} property: ${key}`
+        continue
+      }
+      const failure = argumentError(schema.properties[key], item, `${path}.${key}`)
+      if (failure !== undefined) return failure
+    }
+  } else if (type === 'array') {
+    for (const [index, item] of value.entries()) {
+      const failure = argumentError(schema.items, item, `${path}[${index}]`)
+      if (failure !== undefined) return failure
+    }
+  }
+  return undefined
 }
 
 export function createDispatcher(client) {
   const tools = new Map(toolDefinitions().map(tool => [tool.name, tool]))
 
   return async function dispatch(request) {
+    if (request === null || typeof request !== 'object' || Array.isArray(request)
+      || request.jsonrpc !== '2.0' || typeof request.method !== 'string'
+      || (request.id !== undefined && request.id !== null && typeof request.id !== 'string' && typeof request.id !== 'number')) {
+      return { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'invalid JSON-RPC request' } }
+    }
+    // Notifications never receive responses or invoke request-only tools.
+    if (request.id === undefined) return undefined
     const id = request.id
+    if (request.params !== undefined && (request.params === null || typeof request.params !== 'object' || Array.isArray(request.params))) {
+      return { jsonrpc: '2.0', id, error: { code: -32602, message: 'params must be an object' } }
+    }
     if (request.method === 'initialize') {
       return {
         jsonrpc: '2.0',
         id,
         result: {
-          protocolVersion: request.params?.protocolVersion ?? PROTOCOL_VERSION,
+          protocolVersion: PROTOCOL_VERSION,
           capabilities: { tools: { listChanged: false } },
           serverInfo: { name: 'qoder-dsh-connect', version: '0.1.0' },
         },
@@ -269,12 +312,20 @@ export function createDispatcher(client) {
     if (request.method === 'prompts/list') return { jsonrpc: '2.0', id, result: { prompts: [] } }
     if (request.method === 'tools/call') {
       const name = request.params?.name
+      if (typeof name !== 'string') {
+        return { jsonrpc: '2.0', id, error: { code: -32602, message: 'tool name must be a string' } }
+      }
       const tool = tools.get(name)
       if (tool === undefined) {
         return { jsonrpc: '2.0', id, error: { code: -32602, message: `unknown tool: ${name}` } }
       }
+      const args = request.params?.arguments === undefined ? {} : request.params.arguments
+      const failure = argumentError(tool.inputSchema, args)
+      if (failure !== undefined) {
+        return { jsonrpc: '2.0', id, error: { code: -32602, message: failure } }
+      }
       try {
-        const value = await tool.handler(client, request.params?.arguments ?? {})
+        const value = await tool.handler(client, args)
         return { jsonrpc: '2.0', id, result: toolResult(value) }
       } catch (error) {
         const detail = error?.body !== undefined ? `\n${JSON.stringify(error.body, null, 2)}` : ''
@@ -285,19 +336,17 @@ export function createDispatcher(client) {
         }
       }
     }
-    if (request.id === undefined) return undefined
     return { jsonrpc: '2.0', id, error: { code: -32601, message: `method not found: ${request.method}` } }
   }
 }
 
 export async function runStdioServer({ client, input = process.stdin, output = process.stdout, error = process.stderr }) {
   const dispatch = createDispatcher(client)
-  let buffer = ''
-  let queue = Promise.resolve()
+  let buffer = Buffer.alloc(0)
+  const pending = new Set()
 
   const send = message => {
-    if (message === undefined) return
-    output.write(JSON.stringify(message) + '\n')
+    if (message !== undefined) output.write(JSON.stringify(message) + '\n')
   }
 
   async function consume(text) {
@@ -306,49 +355,92 @@ export async function runStdioServer({ client, input = process.stdin, output = p
       request = JSON.parse(text)
     } catch (parseError) {
       error.write(`invalid JSON-RPC message: ${parseError.message}\n`)
+      send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } })
       return
     }
-    const response = await dispatch(request)
-    send(response)
+    send(await dispatch(request))
   }
 
-  function drain() {
+  function enqueue(body) {
+    // Long-running tools must not block ping, status, or explicit run cancellation.
+    const job = consume(body).catch(consumeError => error.write(`${consumeError.message}\n`))
+    pending.add(job)
+    void job.then(() => pending.delete(job), () => pending.delete(job))
+  }
+
+  function rejectInput(message) {
+    buffer = Buffer.alloc(0)
+    send({ jsonrpc: '2.0', id: null, error: { code: -32700, message } })
+    input.destroy()
+  }
+
+  function drain(final = false) {
     while (buffer.length > 0) {
-      if (buffer.startsWith('Content-Length:')) {
+      if (buffer.subarray(0, 15).toString('ascii') === 'Content-Length:') {
         const headerEnd = buffer.indexOf('\r\n\r\n')
-        if (headerEnd < 0) return
-        const firstHeader = buffer.slice(0, headerEnd).split(/\r\n/, 1)[0]
-        const length = Number(firstHeader.slice('Content-Length:'.length).trim())
-        if (!Number.isFinite(length) || length < 0) {
-          buffer = buffer.slice(headerEnd + 4)
+        if (headerEnd < 0) {
+          if (buffer.length > MAX_HEADER_BYTES) rejectInput('MCP header exceeds 8192 bytes')
+          return
+        }
+        if (headerEnd > MAX_HEADER_BYTES) {
+          rejectInput('MCP header exceeds 8192 bytes')
+          return
+        }
+        const firstHeader = buffer.subarray(0, headerEnd).toString('ascii').split(/\r\n/, 1)[0]
+        const rawLength = firstHeader.slice('Content-Length:'.length).trim()
+        const length = Number(rawLength)
+        if (!/^\d+$/.test(rawLength) || !Number.isSafeInteger(length)) {
+          buffer = buffer.subarray(headerEnd + 4)
+          send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'invalid Content-Length' } })
           continue
         }
+        if (length > MAX_MESSAGE_BYTES) {
+          rejectInput('MCP message exceeds 1 MiB')
+          return
+        }
         if (buffer.length < headerEnd + 4 + length) return
-        const body = buffer.slice(headerEnd + 4, headerEnd + 4 + length)
-        buffer = buffer.slice(headerEnd + 4 + length)
-        queue = queue.then(() => consume(body)).catch(consumeError => error.write(`${consumeError.message}\n`))
+        const body = buffer.subarray(headerEnd + 4, headerEnd + 4 + length).toString('utf8')
+        buffer = buffer.subarray(headerEnd + 4 + length)
+        enqueue(body)
         continue
       }
       const newline = buffer.indexOf('\n')
-      if (newline < 0) return
-      const line = buffer.slice(0, newline).trim()
-      buffer = buffer.slice(newline + 1)
-      if (line.length > 0) {
-        queue = queue.then(() => consume(line)).catch(consumeError => error.write(`${consumeError.message}\n`))
+      if ((newline < 0 ? buffer.length : newline) > MAX_MESSAGE_BYTES) {
+        rejectInput('MCP message exceeds 1 MiB')
+        return
       }
+      if (newline < 0 && !final) return
+      const end = newline < 0 ? buffer.length : newline
+      const line = buffer.subarray(0, end).toString('utf8').trim()
+      buffer = buffer.subarray(newline < 0 ? end : end + 1)
+      if (line.length > 0) enqueue(line)
     }
   }
 
-  input.setEncoding?.('utf8')
-  input.on('data', chunk => {
-    buffer += chunk
-    drain()
+  await new Promise((resolve, reject) => {
+    let finishing = false
+    const finish = () => {
+      if (finishing) return
+      finishing = true
+      drain(true)
+      if (buffer.length > 0) {
+        buffer = Buffer.alloc(0)
+        send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'incomplete Content-Length frame' } })
+      }
+      void Promise.all([...pending]).then(() => {
+        output.end()
+        resolve()
+      }).catch(reject)
+    }
+    input.on('data', chunk => {
+      buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)])
+      drain()
+    })
+    input.once('end', finish)
+    input.once('close', finish)
+    input.once('error', reject)
+    error.write('qoder-dsh-connect MCP server ready on stdio\n')
   })
-  input.on('end', () => {
-    void queue.finally(() => output.end())
-  })
-  error.write('qoder-dsh-connect MCP server ready on stdio\n')
-  await new Promise(resolve => input.on('close', resolve))
 }
 
 export { PROTOCOL_VERSION }

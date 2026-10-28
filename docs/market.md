@@ -44,14 +44,12 @@
       "author": "…",
       "homepage": "…",
       "repository": { "url": "…" },
-      "defaultVersion": "1.0.0",
       "versions": [
         {
           "version": "1.0.0",
-          "publishTimestamp": "…",
-          "install": "pkg@1.0.0",
-          "engines": { "dsh": "^0.2.1" },
-          "compatibility": { "compatible": true }
+          "publishTimestamp": 1767225600,
+          "source": { "type": "npm", "registry": "https://registry.npmjs.org" },
+          "engines": { "dsh": "^0.2.1" }
         }
       ],
       "metadata": { "category": "tools", "keywords": [], "labels": [] }
@@ -59,6 +57,8 @@
   ]
 }
 ```
+
+原始 format-1 的安装来源在各版本的 `source` 中。插件从 npm 来源生成 `{spec: "pkg@1.0.0", registry?}`；Git 来源生成固定到完整 commit 的 `git+https://…git#<commit>&path:/<package-dir>` spec，并保留 `source`。已有索引提供 `install` 时仍保留该字段。`compatibility` 由宿主市场服务补充，HTTP 原始索引不保证包含它。
 
 ### 社区 `plugins.json`
 
@@ -138,6 +138,7 @@ curl -s 'http://127.0.0.1:3080/api/qoder-dsh-connect/market/entry?name=dsh-workb
 ## 缓存与限制
 
 - 同一 URL 默认缓存 5 分钟（`cacheMs`）。
+- 缓存最多保留 16 个索引，淘汰最久未使用的项；`cacheMs: 0` 不保存缓存。
 - 每个索引响应上限 4 MiB（`maxBytes`），防止大文件拖垮宿主。
 - 拉取超时 `timeoutMs`，默认 15 秒。
 - 搜索在内存中对归一化后的条目过滤；几千条索引足够快。

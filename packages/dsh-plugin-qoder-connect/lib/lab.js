@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { appendFile, copyFile, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
+import { appendFile, copyFile, lstat, mkdir, readFile, readdir, realpath, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { detached, terminateTree } from './process-tree.js'
@@ -12,6 +12,7 @@ const NAME_RE = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
 const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
 const PROFILE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const BACKUP_RE = /^\d{8}-\d{6}-qoder-connect-[A-Za-z0-9._-]+-[a-f0-9]{6}$/
+const PROFILE_FILES = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'cordis.patch.yml']
 
 class LabError extends Error {
   constructor(status, message, details) {
@@ -46,6 +47,52 @@ async function exists(path) {
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, 'utf8'))
+}
+
+function isContained(root, target) {
+  const rel = relative(root, target)
+  return rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel)
+}
+
+// Check the nearest existing ancestor for new files, so a pre-existing symlink
+// cannot redirect scaffold writes outside the authorized directory.
+async function containedPath(root, path, allowMissing = false) {
+  const target = resolve(path)
+  const realRoot = await realpath(root)
+  if (!isContained(resolve(root), target) && !isContained(realRoot, target)) {
+    throw new LabError(403, 'path must stay inside its authorized directory')
+  }
+  let ancestor = target
+  while (true) {
+    try {
+      await lstat(ancestor)
+      break
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+      if (!allowMissing) throw new LabError(404, 'path does not exist')
+      ancestor = dirname(ancestor)
+    }
+  }
+  let realAncestor
+  try {
+    realAncestor = await realpath(ancestor)
+  } catch (error) {
+    if (error.code === 'ENOENT') throw new LabError(403, 'path contains a dangling symbolic link')
+    throw error
+  }
+  if (!isContained(realRoot, realAncestor)) throw new LabError(403, 'path resolves outside its authorized directory')
+  return resolve(realAncestor, relative(ancestor, target))
+}
+
+async function profileFile(root, name, allowMissing = false) {
+  const path = join(root, name)
+  try {
+    if (!(await lstat(path)).isFile()) throw new LabError(403, `${name} must be a regular file`)
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+    if (!allowMissing) throw new LabError(404, `${name} is missing`)
+  }
+  return await containedPath(root, path, allowMissing)
 }
 
 async function walkFiles(dir, depth = 0) {
@@ -153,7 +200,7 @@ node test/smoke.mjs
 function scaffoldSkill(name, description) {
   const skill = `---
 name: ${name}
-description: ${description.replace(/\s+/g, ' ').trim()}
+description: ${JSON.stringify(description.replace(/\s+/g, ' ').trim())}
 ---
 
 # ${name}
@@ -184,7 +231,16 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
   const dshHome = resolve(config.dshHome ?? process.env.DSH_HOME ?? join(homedir(), '.dsh'))
   const profilesDir = join(dshHome, 'profiles')
   const backupsRoot = join(dshHome, 'backups')
-  const journalPath = join(labDir, 'ops.ndjson')
+  let operationChain = Promise.resolve()
+  let cleanupFailed = false
+
+  function serialize(operation) {
+    return args => {
+      const result = operationChain.then(() => operation(args))
+      operationChain = result.then(() => undefined, () => undefined)
+      return result
+    }
+  }
 
   async function ensureLab() {
     await mkdir(labDir, { recursive: true })
@@ -194,6 +250,7 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
     if (config.enabled !== true) {
       throw new LabError(403, 'the lab is disabled: set lab.enabled=true in the plugin config to enable profile writes')
     }
+    if (cleanupFailed) throw new LabError(503, 'temporary lab host did not stop; restart the host before further lab operations')
   }
 
   function assertProfile(profile) {
@@ -212,24 +269,27 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
   async function assertContained(path) {
     if (typeof path !== 'string' || path.length === 0) throw new LabError(400, 'path is required')
     await ensureLab()
-    const root = resolve(labDir)
-    const target = resolve(path)
-    const rel = relative(root, target)
-    if (rel.startsWith('..' + sep) || rel === '..' || isAbsolute(rel)) {
-      throw new LabError(403, 'path must stay inside the lab directory')
+    return await containedPath(labDir, path)
+  }
+
+  async function profileDirectory(profile) {
+    const target = await containedPath(profilesDir, join(profilesDir, profile))
+    if (!(await stat(target)).isDirectory()) throw new LabError(400, 'profile must be a directory')
+    if (config.allowCurrentProfile !== true && PROFILE_RE.test(currentProfile ?? '')) {
+      try {
+        if (target === await realpath(join(profilesDir, currentProfile))) {
+          throw new LabError(403, 'refusing to modify an alias of the current host profile')
+        }
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error
+      }
     }
-    if (!await exists(target)) throw new LabError(404, 'path does not exist')
-    const [realRoot, realTarget] = await Promise.all([realpath(root), realpath(target)])
-    const realRel = relative(realRoot, realTarget)
-    if (realRel.startsWith('..' + sep) || realRel === '..' || isAbsolute(realRel)) {
-      throw new LabError(403, 'path resolves outside the lab directory')
-    }
-    return realTarget
+    return target
   }
 
   async function appendJournal(entry) {
     await ensureLab()
-    await appendFile(journalPath, JSON.stringify(entry) + '\n', 'utf8')
+    await appendFile(await profileFile(labDir, 'ops.ndjson', true), JSON.stringify(entry) + '\n', 'utf8')
   }
 
   async function runTool(args, timeoutMs) {
@@ -239,7 +299,7 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
     return await new Promise(resolvePromise => {
       const child = spawn(process.execPath, [dshBin, ...args], {
         cwd: labDir,
-        env: process.env,
+        env: { ...process.env, DSH_HOME: dshHome },
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         shell: false,
@@ -269,14 +329,13 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
   }
 
   async function createBackup(profile, reason) {
+    const profileDir = await profileDirectory(profile)
     const id = `${stamp()}-qoder-connect-${profile}-${randomBytes(3).toString('hex')}`
     const dir = join(backupsRoot, id)
     await mkdir(dir, { recursive: true })
-    const profileDir = join(profilesDir, profile)
-    if (!await exists(profileDir)) throw new LabError(404, `profile ${profile} does not exist`)
     const files = []
-    for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'cordis.patch.yml']) {
-      const source = join(profileDir, name)
+    for (const name of PROFILE_FILES) {
+      const source = await profileFile(profileDir, name, true)
       if (await exists(source)) {
         await copyFile(source, join(dir, name))
         files.push(name)
@@ -293,9 +352,12 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
     const packagePath = join(path, 'package.json')
     let pkg
     try {
-      pkg = await readJson(packagePath)
+      pkg = await readJson(await containedPath(path, packagePath))
     } catch (error) {
       return { ok: false, kind: 'plugin', path, name: undefined, errors: [`package.json is missing or unreadable: ${error.message}`], warnings }
+    }
+    if (pkg === null || typeof pkg !== 'object' || Array.isArray(pkg)) {
+      return { ok: false, kind: 'plugin', path, errors: ['package.json must contain an object'], warnings }
     }
     const name = typeof pkg.name === 'string' ? pkg.name : undefined
     if (name === undefined || !NAME_RE.test(name) || name.length > 214) errors.push('package.json name is not a valid npm package name')
@@ -313,7 +375,7 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
     const patchPath = join(path, 'cordis.patch.yml')
     let patch = ''
     try {
-      patch = await readFile(patchPath, 'utf8')
+      patch = await readFile(await containedPath(path, patchPath), 'utf8')
     } catch {
       errors.push('cordis.patch.yml is missing')
     }
@@ -323,18 +385,30 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
       if (!new RegExp(`^\\s*name:\\s*['"]?${escaped}['"]?\\s*$`, 'm').test(patch)) errors.push(`cordis.patch.yml has no insert row with name: ${name}`)
     }
 
-    const entry = typeof pkg.main === 'string' ? join(path, pkg.main) : undefined
+    let entry
+    if (typeof pkg.main === 'string' && pkg.main.length > 0) {
+      try {
+        entry = await containedPath(path, resolve(path, pkg.main))
+      } catch (error) {
+        errors.push(`main entry is unavailable: ${error.message}`)
+      }
+    }
     let entryText = ''
     if (entry === undefined || !await exists(entry)) {
       errors.push('main entry file does not exist')
     } else {
-      entryText = await readFile(entry, 'utf8')
-      if (!/export\s+(?:const|let|var)\s+name\s*=|export\s*\{[^}]*\bname\b/.test(entryText)) errors.push('entry does not export name')
-      if (!/export\s+(?:async\s+)?function\s+apply\s*\(|export\s*\{[^}]*\bapply\b/.test(entryText)) errors.push('entry does not export apply(ctx)')
+      try {
+        if (!(await stat(entry)).isFile()) throw new Error('main entry must be a regular file')
+        entryText = await readFile(entry, 'utf8')
+        if (!/export\s+(?:const|let|var)\s+name\s*=|export\s*\{[^}]*\bname\b/.test(entryText)) errors.push('entry does not export name')
+        if (!/export\s+(?:async\s+)?function\s+apply\s*\(|export\s*\{[^}]*\bapply\b/.test(entryText)) errors.push('entry does not export apply(ctx)')
+      } catch (error) {
+        errors.push(`main entry is unreadable: ${error.message}`)
+      }
     }
 
     const libDir = join(path, 'lib')
-    const libFiles = await walkFiles(libDir)
+    const libFiles = await exists(libDir) ? await walkFiles(await containedPath(path, libDir)) : []
     const source = [entryText, ...await Promise.all(libFiles.filter(file => file !== entry).map(file => readFile(file, 'utf8')))].join('\n')
     if (/shell:\s*true/.test(source)) warnings.push('source enables a shell; prefer an argv array')
     if (/0\.0\.0\.0/.test(source)) warnings.push('source binds 0.0.0.0; host routes should follow the host binding')
@@ -349,7 +423,7 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
     const skillPath = join(path, 'SKILL.md')
     let content = ''
     try {
-      content = await readFile(skillPath, 'utf8')
+      content = await readFile(await containedPath(path, skillPath), 'utf8')
     } catch {
       return { ok: false, kind: 'skill', path, name: undefined, errors: ['SKILL.md is missing'], warnings }
     }
@@ -384,17 +458,20 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
     assertEnabled()
     await ensureLab()
     if (kind !== 'plugin' && kind !== 'skill') throw new LabError(400, 'kind must be plugin or skill')
-    if (typeof name !== 'string' || (kind === 'plugin' ? !NAME_RE.test(name) : !SKILL_NAME_RE.test(name))) {
+    if (typeof name !== 'string' || (kind === 'plugin' ? !NAME_RE.test(name) || name.length > 214 : !SKILL_NAME_RE.test(name))) {
       throw new LabError(400, kind === 'plugin' ? 'name must be a valid npm package name' : 'skill name must use lowercase letters, digits, and hyphens')
     }
-    const target = join(labDir, kind === 'plugin' ? 'plugins' : 'skills', name)
+    const target = await containedPath(labDir, join(labDir, kind === 'plugin' ? 'plugins' : 'skills', name), true)
     if (await exists(target) && force !== true) throw new LabError(409, `${target} already exists; pass force=true to overwrite`)
     const title = typeof description === 'string' && description.trim().length > 0
       ? description.trim().slice(0, 500)
       : `${name} generated by qoder-dsh-connect`
     const files = kind === 'plugin' ? scaffoldPlugin(name, title) : scaffoldSkill(name, title)
-    for (const [relativePath, content] of Object.entries(files)) {
-      const file = join(target, relativePath)
+    // Validate every output before writing the first one, including --force.
+    const outputs = await Promise.all(Object.entries(files).map(async ([relativePath, content]) => [
+      await containedPath(labDir, join(target, relativePath), true), content,
+    ]))
+    for (const [file, content] of outputs) {
       await mkdir(dirname(file), { recursive: true })
       await writeFile(file, content, 'utf8')
     }
@@ -484,26 +561,42 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
     assertEnabled()
     if (typeof backupId !== 'string' || !BACKUP_RE.test(backupId)) throw new LabError(400, 'backupId is invalid')
     if (confirm !== backupId) throw new LabError(400, 'send confirm with the same backupId to restore')
-    const dir = join(backupsRoot, backupId)
+    const dir = await containedPath(backupsRoot, join(backupsRoot, backupId))
     let meta
     try {
-      meta = await readJson(join(dir, 'backup.json'))
+      meta = await readJson(await containedPath(dir, join(dir, 'backup.json')))
     } catch {
       throw new LabError(404, `backup ${backupId} was not found`)
     }
-    assertProfile(meta.profile)
-    const preRestore = await createBackup(meta.profile, 'pre-restore')
-    const allowed = new Set(['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'cordis.patch.yml'])
-    const restored = []
-    for (const name of Array.isArray(meta.files) ? meta.files : []) {
-      if (!allowed.has(name)) continue
-      const source = join(dir, name)
-      if (!await exists(source)) continue
-      await copyFile(source, join(profilesDir, meta.profile, name))
-      restored.push(name)
+    if (meta === null || typeof meta !== 'object' || meta.id !== backupId || !Array.isArray(meta.files) || meta.files.some(name => !PROFILE_FILES.includes(name))) {
+      throw new LabError(400, 'backup metadata is invalid')
     }
-    await appendJournal({ op: 'restore', at: Date.now(), profile: meta.profile, backupId, restoreFrom: backupId, preRestoreBackupId: preRestore.id, ok: true, files: restored })
-    return { ok: true, profile: meta.profile, backupId, preRestoreBackup: preRestore, restored }
+    assertProfile(meta.profile)
+    const profileDir = await profileDirectory(meta.profile)
+    // Fail before changing the profile if any saved file is missing or any
+    // source/destination redirects outside the backup/profile directory.
+    const sources = new Map()
+    for (const name of meta.files) sources.set(name, await profileFile(dir, name))
+    const destinations = new Map()
+    for (const name of PROFILE_FILES) destinations.set(name, await profileFile(profileDir, name, true))
+    const preRestore = await createBackup(meta.profile, 'pre-restore')
+    const restored = []
+    const removed = []
+    for (const name of PROFILE_FILES) {
+      if (sources.has(name)) {
+        await copyFile(sources.get(name), destinations.get(name))
+        restored.push(name)
+      } else {
+        try {
+          await unlink(destinations.get(name))
+          removed.push(name)
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error
+        }
+      }
+    }
+    await appendJournal({ op: 'restore', at: Date.now(), profile: meta.profile, backupId, restoreFrom: backupId, preRestoreBackupId: preRestore.id, ok: true, files: restored, removed })
+    return { ok: true, profile: meta.profile, backupId, preRestoreBackup: preRestore, restored, removed }
   }
 
   async function bootVerify(profile, timeoutMs) {
@@ -514,7 +607,7 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
       const args = ['--profile', profile, '--no-open', '--port', '0']
       const child = spawn(process.execPath, [dshBin, ...args], {
         cwd: labDir,
-        env: process.env,
+        env: { ...process.env, DSH_HOME: dshHome },
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         shell: false,
@@ -524,6 +617,8 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
       let url
       let settled = false
       let timer
+      let readyTimer
+      const closed = new Promise(resolveClose => { child.once('close', () => resolveClose(true)) })
       const append = chunk => {
         if (output.length >= OUTPUT_CAP) return
         output = (output + chunk).slice(0, OUTPUT_CAP)
@@ -536,6 +631,7 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
         if (settled) return
         settled = true
         clearTimeout(timer)
+        clearTimeout(readyTimer)
         const warnings = redactSecrets(output).split(/\r?\n/).filter(line => /did not activate|patch: entry|startup failed/i.test(line)).slice(0, 20)
         let reachable
         if (url !== undefined) {
@@ -547,14 +643,24 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
           }
         }
         terminateTree(child)
-        resolvePromise({ ok: url !== undefined && reachable === true, profile, url: url === undefined ? undefined : redactSecrets(url), reachable, warnings, output: tail(output, 6000) })
+        let stopTimer
+        const stopped = await Promise.race([
+          closed,
+          new Promise(resolveStop => { stopTimer = setTimeout(() => resolveStop(false), 6000) }),
+        ])
+        clearTimeout(stopTimer)
+        if (!stopped) {
+          cleanupFailed = true
+          warnings.push('temporary lab host did not stop')
+        }
+        resolvePromise({ ok: url !== undefined && reachable === true && stopped && warnings.length === 0, profile, url: url === undefined ? undefined : redactSecrets(url), reachable, stopped, warnings, output: tail(output, 6000) })
       }
       timer = setTimeout(async () => { await finish() }, timeoutMs)
       child.stdout.setEncoding('utf8')
       child.stderr.setEncoding('utf8')
       child.stdout.on('data', chunk => {
         append(chunk)
-        if (url !== undefined) setTimeout(() => { void finish() }, 800)
+        if (url !== undefined && readyTimer === undefined) readyTimer = setTimeout(() => { void finish() }, 800)
       })
       child.stderr.on('data', append)
       child.on('error', async error => {
@@ -565,29 +671,59 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
     })
   }
 
-  async function verify({ profile, boot }) {
+  async function expectedPlugin(profile) {
+    const records = await readNdjson(await profileFile(labDir, 'ops.ndjson', true), 500)
+    const removed = new Set()
+    for (const record of records.reverse()) {
+      if (record.profile !== profile || record.ok !== true) continue
+      // A restore changes the configuration independently of earlier installs.
+      if (record.op === 'restore') break
+      if (record.op === 'uninstall') removed.add(record.name)
+      if (record.op === 'install' && !removed.has(record.name)) return record.name
+    }
+    return undefined
+  }
+
+  async function verify({ profile, boot, name }) {
     assertEnabled()
     await ensureLab()
     assertProfile(profile)
-    if (boot === true) return await bootVerify(profile, config.timeoutMs)
+    await profileDirectory(profile)
+    if (name !== undefined && (typeof name !== 'string' || !NAME_RE.test(name) || name.length > 214)) {
+      throw new LabError(400, 'name must be a valid npm package name')
+    }
+    const expected = name ?? await expectedPlugin(profile)
     const output = await runTool(['--profile', profile, '--dump-config'], config.timeoutMs)
-    const warnings = redactSecrets(output.stderr).split(/\r?\n/).filter(line => line.trim().length > 0).slice(0, 20)
-    const configured = [...output.stdout.matchAll(/^\s*-\s*id:\s*['"]?([^'"\s]+)['"]?\s*$/gm)].map(match => match[1])
-    return {
-      ok: output.code === 0 && output.timedOut !== true && !warnings.some(line => /patch: entry|did not activate/i.test(line)),
+    const stderrLines = redactSecrets(output.stderr).split(/\r?\n/).filter(line => line.trim().length > 0)
+    const warnings = stderrLines.slice(0, 20)
+    // dsh emits root entry lists. Nested config arrays may also contain id
+    // fields, but those do not prove that a root plugin entry was installed.
+    const entries = output.stdout.split(/(?=^-\s)/m).filter(row => /^-\s/.test(row))
+    const configured = entries.filter(row => !/^(?:-\s| {2})disabled:\s*true\s*$/m.test(row))
+      .map(row => row.match(/^(?:-\s| {2})id:\s*['"]?([^'"\s]+)['"]?\s*$/m)?.[1]).filter(Boolean)
+    const missing = expected !== undefined && !configured.includes(expected) ? [expected] : []
+    const result = {
+      ok: output.code === 0 && output.timedOut !== true && missing.length === 0 && !stderrLines.some(line => /patch: entry|did not activate/i.test(line)),
       mode: 'config',
       profile,
       code: output.code,
       timedOut: output.timedOut,
+      expected,
+      missing,
       configured,
+      verificationScope: expected === undefined ? 'profile-configuration' : 'plugin-configuration',
       warnings,
       stderr: tail(output.stderr),
     }
+    if (boot !== true || result.ok !== true) return result
+    const bootResult = await bootVerify(profile, config.timeoutMs)
+    return { ...result, ...bootResult, mode: 'boot', verificationScope: expected === undefined ? 'host-reachability' : 'plugin-configuration-and-host-reachability' }
   }
 
   async function ops(limit = 50) {
     assertEnabled()
-    const records = await readNdjson(journalPath, Math.min(Math.max(limit, 1), 500))
+    await ensureLab()
+    const records = await readNdjson(await profileFile(labDir, 'ops.ndjson', true), Math.min(Math.max(limit, 1), 500))
     return records.slice().reverse()
   }
 
@@ -603,12 +739,12 @@ export function createLab({ config, warn = () => {}, dshBin, currentProfile }) {
         bin: dshBin,
       }
     },
-    scaffold,
+    scaffold: serialize(scaffold),
     check,
-    install,
-    uninstall,
-    restore,
-    verify,
+    install: serialize(install),
+    uninstall: serialize(uninstall),
+    restore: serialize(restore),
+    verify: serialize(verify),
     ops,
   }
 }

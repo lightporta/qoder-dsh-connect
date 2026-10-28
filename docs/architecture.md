@@ -119,7 +119,7 @@ restore  → 从 backup 目录复制四个 profile 文件
 
 - 实测 dsh `0.2.1-rc.2`。
 - 事件词表：`session` / `status` / `thinking` / `text` / `tool_call` / `tool_result` / `final`。
-- `step_end.usage` 是累计快照，折叠时取 max，不累加。
+- `step_end.usage` 是单步用量；运行视图逐步累加 input/output/cache/reasoning/total token。
 - `web` profile 顶层 `tool-jobs` 可能被禁用；job 镜像失败只降级。
 - `pluginMarket` 可能未挂载；市场 HTTP source 不受影响。
 - dsh 升级后按 [安装文档](install-web.md) 的验证三连重跑，并检查事件/市场格式是否变化。

@@ -6,6 +6,7 @@ const LEDGER_READ_BYTES = 8 * 1024 * 1024
 const TRIM_READ_BYTES = 32 * 1024 * 1024
 
 export async function tailLines(path, maxLines, maxBytes = TAIL_READ_BYTES) {
+  if (maxLines <= 0) return []
   let handle
   try {
     handle = await open(path, 'r')
@@ -28,17 +29,18 @@ export async function tailLines(path, maxLines, maxBytes = TAIL_READ_BYTES) {
 }
 
 export async function readNdjson(path, maxRecords, maxBytes = LEDGER_READ_BYTES) {
-  const lines = await tailLines(path, maxRecords, maxBytes)
+  if (maxRecords <= 0) return []
+  const lines = await tailLines(path, Number.MAX_SAFE_INTEGER, maxBytes)
   const records = []
   for (const line of lines) {
     try {
       const parsed = JSON.parse(line)
-      if (parsed !== null && typeof parsed === 'object') records.push(parsed)
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) records.push(parsed)
     } catch {
       // A torn trailing write from a killed host is expected.
     }
   }
-  return records
+  return records.slice(-maxRecords)
 }
 
 export function createStore({ dir, retainRuns, retainLearnings, warn }) {
@@ -80,7 +82,8 @@ export function createStore({ dir, retainRuns, retainLearnings, warn }) {
       })
     },
 
-    readEventTail(id, maxLines) {
+    async readEventTail(id, maxLines) {
+      await chain
       return tailLines(join(runsDir, `${id}.ndjson`), maxLines)
     },
 
@@ -95,7 +98,8 @@ export function createStore({ dir, retainRuns, retainLearnings, warn }) {
       })
     },
 
-    listRuns(limit) {
+    async listRuns(limit) {
+      await chain
       return readNdjson(runsLedger, limit)
     },
 
@@ -106,12 +110,17 @@ export function createStore({ dir, retainRuns, retainLearnings, warn }) {
           await trim(learningsLedger, retainLearnings)
         } catch (error) {
           warn(`learning ledger append failed: ${error instanceof Error ? error.message : String(error)}`)
+          throw error
         }
       })
     },
 
-    listLearnings(limit) {
-      return readNdjson(learningsLedger, limit)
+    async listLearnings(limit, { topic } = {}) {
+      await chain
+      if (limit <= 0) return []
+      if (topic === undefined) return readNdjson(learningsLedger, limit)
+      const records = await readNdjson(learningsLedger, Number.MAX_SAFE_INTEGER)
+      return records.filter(record => record.topic === topic).slice(-limit)
     },
 
     async readText(name) {

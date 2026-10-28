@@ -57,6 +57,9 @@ origin 并自动把 query 里的 token 作为认证凭据。
 }
 ```
 
+MCP 输入支持逐行 JSON 与按 UTF-8 字节计算的 `Content-Length` 帧；单条消息上限为 1 MiB。
+长任务不会阻塞状态查询或 `dsh_kill`；关闭 stdin 时会等待已接收的请求完成。
+
 MCP 工具：
 
 | 工具 | 用途 |

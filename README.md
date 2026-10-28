@@ -41,6 +41,8 @@ dsh host plugin（web / desktop profile）
 
 ## 快速开始（Windows / Git Bash）
 
+先确认 `dsh --version` 和 `pnpm --version` 可执行；`dsh plugin add/remove` 需要 PATH 中的 pnpm。macOS/Linux 将示例里的 `C:/path/to/…` 换成本机绝对路径；Desktop 的启动方式与限制见 [安装说明](docs/install-desktop.md)。
+
 ### 1. 备份 profile
 
 ```bash
@@ -197,7 +199,7 @@ node packages/qoder-dsh-connect-cli/bin/qoder-dsh-connect.mjs market entry dsh-w
 ## 开发与测试
 
 ```bash
-npm test          # 33 项测试，使用假 dsh 子进程，不消耗模型调用
+npm test          # 单元与回归测试，使用假 dsh 子进程，不消耗模型调用
 npm run check     # 语法、包元数据、patch、Skill frontmatter、危险模式扫描
 npm run smoke     # 真实 dsh headless 冒烟，会消耗一次模型调用
 npm run smoke:live -- http://127.0.0.1:3080   # 对运行中的宿主做 E2E；参数写法见脚本

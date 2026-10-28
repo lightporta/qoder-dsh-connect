@@ -4,10 +4,13 @@
 
 ```bash
 dsh --version
+pnpm --version
 ls ~/.dsh/profiles/web
 ```
 
 本仓库实测 dsh `0.2.1-rc.2`。升级内核后先重跑本文的验证步骤。
+
+`dsh plugin add/remove` 需要 PATH 中能找到 pnpm；若出现 `spawn pnpm ENOENT`，先修复 pnpm 的安装或 PATH。macOS/Linux 安装命令中的 `C:/path/to/…` 应替换为本机绝对路径，例如 `/Users/<you>/Documents/qoder-dsh-connect/…`。
 
 确认目标 profile 没有被宿主占用（不要在 `dsh web` 运行时改 `node_modules`）。
 

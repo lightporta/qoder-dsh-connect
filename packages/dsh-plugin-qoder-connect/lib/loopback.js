@@ -11,12 +11,18 @@ function isLoopbackAddress(address) {
   if (address === undefined) return false
   const normalized = address.toLowerCase()
   if (normalized === '::1') return true
-  if (normalized.startsWith('::ffff:')) return isIPv4Loopback(normalized.slice('::ffff:'.length))
+  if (normalized.startsWith('::ffff:')) {
+    const mapped = normalized.slice('::ffff:'.length)
+    if (isIPv4Loopback(mapped)) return true
+    const hex = mapped.match(/^([0-9a-f]{1,4}):[0-9a-f]{1,4}$/)
+    return hex !== null && (Number.parseInt(hex[1], 16) >>> 8) === 127
+  }
   return isIPv4Loopback(normalized)
 }
 
 function isLoopbackHostname(hostname) {
-  if (hostname === 'localhost' || hostname === '[::1]') return true
+  if (hostname === 'localhost') return true
+  if (hostname.startsWith('[') && hostname.endsWith(']')) return isLoopbackAddress(hostname.slice(1, -1))
   return isIPv4Loopback(hostname)
 }
 
@@ -35,12 +41,14 @@ export function isLoopbackRequest(request) {
   } catch {
     return false
   }
+  if (hostUrl.username || hostUrl.password || hostUrl.pathname !== '/' || hostUrl.search || hostUrl.hash) return false
   if (!isLoopbackHostname(hostUrl.hostname)) return false
   if (request.headers['sec-fetch-site'] === 'cross-site') return false
   const origin = request.headers.origin
   if (origin === undefined) return true
   try {
-    return new URL(origin).host === hostUrl.host
+    const expectedProtocol = request.socket?.encrypted ? 'https:' : 'http:'
+    return new URL(origin).origin === `${expectedProtocol}//${hostUrl.host}`
   } catch {
     return false
   }

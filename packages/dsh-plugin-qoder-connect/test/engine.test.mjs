@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -33,6 +33,14 @@ async function cleanup(context) {
   context.engine.disposeAll()
   await new Promise(resolve => setTimeout(resolve, 150))
   await rm(context.dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+  if (context.fixtureDir) await rm(context.fixtureDir, { recursive: true, force: true })
+}
+
+async function makeScriptEngine(source) {
+  const fixtureDir = await mkdtemp(join(tmpdir(), 'qdc-stdout-'))
+  const bin = join(fixtureDir, 'fake.mjs')
+  await writeFile(bin, source)
+  return { ...await makeEngine({ bin }), fixtureDir }
 }
 
 function startOrThrow(engine, request) {
@@ -62,10 +70,46 @@ test('engine reports its resolved CLI entry and starts a headless delegation', a
     assert.equal(view.label, 'first')
     assert.equal(view.jobMirror.attached, false)
     assert.ok(view.tail.some(line => line.includes('tool read')))
-    await new Promise(resolve => setTimeout(resolve, 100))
     const ledger = await context.store.listRuns(10)
     assert.equal(ledger.length, 1)
     assert.equal(ledger[0].id, run.id)
+  } finally {
+    await cleanup(context)
+  }
+})
+
+test('settlement preserves full tasks in the ledger and full views', async () => {
+  const context = await makeEngine()
+  const task = `long task ${'x'.repeat(5000)}`
+  try {
+    const run = startOrThrow(context.engine, { task })
+    await context.engine.wait(run, 5000)
+    assert.equal(context.engine.view(run).task.length, 2001)
+    assert.equal(context.engine.view(run, { full: true }).task, task)
+    const ledger = await context.store.listRuns(1)
+    assert.equal(ledger[0].task, task)
+  } finally {
+    await cleanup(context)
+  }
+})
+
+test('invalid event values do not crash a run and oversized lines are discarded whole', async () => {
+  const context = await makeScriptEngine(`
+    process.stdout.write('null\\n42\\n');
+    process.stdout.write('x'.repeat(2 * 1024 * 1024));
+    process.stdout.write(JSON.stringify({ type: 'final', text: 'part of an oversized line' }) + '\\n');
+    process.stdout.write(JSON.stringify({ type: 'final', text: 'complete answer' }) + '\\n');
+  `)
+  try {
+    const run = startOrThrow(context.engine, { task: 'output fixture' })
+    await context.engine.wait(run, 5000)
+    assert.equal(run.status, 'completed')
+    assert.equal(context.engine.view(run).result, 'complete answer')
+    const logs = await context.store.readEventTail(run.id, 20)
+    const events = logs.map(line => JSON.parse(line))
+    assert.equal(events.filter(event => event?.type === 'proxy/output-discarded').length, 1)
+    assert.deepEqual(events.filter(event => event?.type === 'final').map(event => event.text), ['complete answer'])
+    assert.ok(logs.every(line => Buffer.byteLength(line) <= 1024 * 1024))
   } finally {
     await cleanup(context)
   }
@@ -85,6 +129,48 @@ test('engine resumes a session and passes the id to the child argv', async () =>
     assert.ok(calls.some(call => call.args.includes('--session-id') && call.args.includes('session-resume')))
   } finally {
     delete process.env.FAKE_DSH_LOG
+    await cleanup(context)
+  }
+})
+
+test('launch passes task bytes through stdin and pins cwd while preserving host environment', async () => {
+  const context = await makeScriptEngine(`
+    let task = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', chunk => { task += chunk });
+    process.stdin.on('end', () => {
+      const text = JSON.stringify({ task, args: process.argv.slice(2), cwd: process.cwd(), marker: process.env.QDC_LAUNCH_TEST });
+      console.log(JSON.stringify({ type: 'final', text }));
+    });
+  `)
+  const previous = process.env.QDC_LAUNCH_TEST
+  process.env.QDC_LAUNCH_TEST = 'inherited-for-launch-test'
+  try {
+    const task = '中文 task; $(literal)\n--help\n'
+    const run = startOrThrow(context.engine, { task, cwd: context.dir, sessionId: 'session-resume' })
+    await context.engine.wait(run, 5000)
+    assert.equal(run.status, 'completed')
+    const captured = JSON.parse(context.engine.view(run).result)
+    assert.equal(captured.task, task)
+    assert.deepEqual(captured.args, ['--profile', 'headless', '--json', '--session-id', 'session-resume', '-'])
+    assert.equal(captured.cwd, await realpath(context.dir))
+    assert.equal(captured.marker, 'inherited-for-launch-test')
+  } finally {
+    if (previous === undefined) delete process.env.QDC_LAUNCH_TEST
+    else process.env.QDC_LAUNCH_TEST = previous
+    await cleanup(context)
+  }
+})
+
+test('blank resume session IDs are rejected before starting a child', async () => {
+  const context = await makeEngine()
+  try {
+    for (const sessionId of ['', '   ', '\n']) {
+      const result = context.engine.start({ task: 'resume', sessionId })
+      assert.equal(result.status, 400)
+    }
+    assert.equal(context.engine.liveCount(), 0)
+  } finally {
     await cleanup(context)
   }
 })

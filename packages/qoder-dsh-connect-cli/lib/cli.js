@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -37,7 +37,7 @@ Commands:
   lab check <path>                        Static check a lab plugin or skill
   lab install <path> --profile <p> [--mode file|link]
   lab uninstall <name> --profile <p>
-  lab verify --profile <p> [--boot]
+  lab verify --profile <p> [--name <plugin>] [--boot]
   lab restore <backupId> [--confirm <id>]
   skill install [--dest <dir>] [--force]  Copy the bundled Qoder skill
   mcp                                     Run the stdio MCP server
@@ -105,7 +105,9 @@ function printJson(value) {
 }
 
 async function readStdin() {
-  return await readFile(0, 'utf8')
+  const chunks = []
+  for await (const chunk of process.stdin) chunks.push(Buffer.from(chunk))
+  return Buffer.concat(chunks).toString('utf8')
 }
 
 async function installSkill(options) {
@@ -312,7 +314,7 @@ export async function main(argv) {
       if (action === 'verify') {
         const profile = textOption(options, 'profile')
         if (profile === undefined) throw new Error('--profile is required')
-        printJson(await client.labVerify({ profile, boot: flagOption(options, 'boot') }))
+        printJson(await client.labVerify({ profile, boot: flagOption(options, 'boot'), name: textOption(options, 'name') }))
         return
       }
       if (action === 'restore') {

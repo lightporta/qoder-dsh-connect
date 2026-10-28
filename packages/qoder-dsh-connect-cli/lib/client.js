@@ -15,7 +15,8 @@ export class ConnectError extends Error {
 
 async function readConfig(path) {
   try {
-    return JSON.parse(await readFile(path, 'utf8'))
+    const config = JSON.parse(await readFile(path, 'utf8'))
+    return config !== null && typeof config === 'object' && !Array.isArray(config) ? config : {}
   } catch {
     return {}
   }
@@ -44,13 +45,19 @@ export async function resolveOptions(options = {}) {
   return {
     baseUrl: parsed.origin,
     token: typeof token === 'string' && token.length > 0 ? token : undefined,
-    timeoutMs: Number.isFinite(requestedTimeout) && requestedTimeout > 0 ? requestedTimeout : 135000,
+    timeoutMs: Number.isInteger(requestedTimeout) && requestedTimeout > 0 && requestedTimeout <= 2147483647 ? requestedTimeout : 135000,
     configPath,
   }
 }
 
 export async function createClient(options = {}) {
   const resolved = await resolveOptions(options)
+
+  const waitTimeout = wait => {
+    const milliseconds = Number(wait)
+    const budget = Number.isFinite(milliseconds) ? Math.min(120000, Math.max(0, milliseconds)) : 0
+    return Math.max(resolved.timeoutMs, budget > 0 ? Math.ceil(budget) + 15000 : 0)
+  }
 
   async function request(path, init = {}) {
     const url = new URL(`${resolved.baseUrl}${API_ROOT}${path}`)
@@ -66,6 +73,7 @@ export async function createClient(options = {}) {
       body = JSON.stringify(init.body)
     }
     let response
+    let text
     try {
       response = await fetch(url, {
         method: init.method ?? (body === undefined ? 'GET' : 'POST'),
@@ -73,10 +81,10 @@ export async function createClient(options = {}) {
         body,
         signal: AbortSignal.timeout(init.timeoutMs ?? resolved.timeoutMs),
       })
+      text = await response.text()
     } catch (error) {
       throw new ConnectError(`cannot reach ${resolved.baseUrl}: ${error instanceof Error ? error.message : String(error)}`, 0)
     }
-    const text = await response.text()
     let parsed
     try {
       parsed = text.length === 0 ? undefined : JSON.parse(text)
@@ -97,9 +105,9 @@ export async function createClient(options = {}) {
     token: resolved.token,
     request,
     status: () => request('/status'),
-    run: body => request('/runs', { body, timeoutMs: Math.max(resolved.timeoutMs, Number(body.wait ?? 0) + 15000) }),
+    run: body => request('/runs', { body, timeoutMs: waitTimeout(body.wait) }),
     runs: query => request('/runs', { query }),
-    get: (id, query) => request(`/runs/${encodeURIComponent(id)}`, { query }),
+    get: (id, query) => request(`/runs/${encodeURIComponent(id)}`, { query, timeoutMs: waitTimeout(query?.wait) }),
     kill: (id, reason) => request(`/runs/${encodeURIComponent(id)}/kill`, { body: { reason } }),
     learnings: query => request('/learnings', { query }),
     learn: body => request('/learnings', { body }),

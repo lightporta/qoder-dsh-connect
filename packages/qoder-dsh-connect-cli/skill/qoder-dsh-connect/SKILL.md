@@ -71,7 +71,7 @@ node <repo>/packages/qoder-dsh-connect-cli/bin/qoder-dsh-connect.mjs run "任务
 
 ### 结果怎么用
 
-- `result` 是终局回答；`tail` 是紧凑进度；`usage` 是累计 token 快照。
+- `result` 是终局回答；`tail` 是紧凑进度；`usage` 是各步 token 用量之和。
 - `counts` 里的工具调用数可以用来判断任务是否真的执行了动作。
 - `jobMirror.attached=false` 只表示 GUI 任务面板没挂上，不代表委派失败。
 

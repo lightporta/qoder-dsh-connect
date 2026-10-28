@@ -87,10 +87,9 @@ dsh 官方市场使用 format-1 索引。一个最小条目：
   "versions": [
     {
       "version": "0.1.0",
-      "publishTimestamp": "2026-10-20T00:00:00Z",
-      "source": "https://registry.npmjs.org/qoder-dsh-connect/-/qoder-dsh-connect-0.1.0.tgz",
-      "engines": { "dsh": "^0.2.1" },
-      "install": "qoder-dsh-connect@0.1.0"
+      "publishTimestamp": 1792454400,
+      "source": { "type": "npm", "registry": "https://registry.npmjs.org" },
+      "engines": { "dsh": "^0.2.1" }
     }
   ],
   "metadata": {

@@ -1,12 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { isAuthorized, isLoopbackRequest } from '../lib/loopback.js'
 import { compact, createAggregate, fold } from '../lib/events.js'
 import { normalizeLearning, renderDigest } from '../lib/digest.js'
-import { resolveCwd } from '../lib/engine.js'
+import { resolveCwd, resolveDshBin } from '../lib/engine.js'
 import { redactSecrets } from '../lib/redact.js'
 
 const request = (remoteAddress, headers = {}, url = '/api/qoder-dsh-connect/status') => ({
@@ -44,7 +44,7 @@ test('token auth accepts bearer, shared header, and query token', () => {
   assert.equal(isAuthorized(request('127.0.0.1', {}, '/api/qoder-dsh-connect/status?token=local-secret'), token), true)
 })
 
-test('event folding keeps cumulative usage and final text', () => {
+test('event folding sums per-step usage and keeps final text', () => {
   const aggregate = createAggregate()
   const events = [
     { type: 'session', sessionId: 'session-1' },
@@ -55,7 +55,7 @@ test('event folding keeps cumulative usage and final text', () => {
     { type: 'thinking', text: 'abc' },
     { type: 'text', text: 'hello' },
     { type: 'status', phase: 'step_end', usage: { inputTokens: 12, outputTokens: 7, totalTokens: 19 } },
-    { type: 'status', phase: 'step_end', usage: { inputTokens: 10, outputTokens: 8, totalTokens: 18 } },
+    { type: 'status', phase: 'step_end', usage: { inputTokens: 10, outputTokens: 8, totalTokens: 18, reasoningTokens: 3 } },
     { type: 'status', phase: 'turn_end', reason: 'stop' },
     { type: 'final', text: 'done' },
   ]
@@ -68,11 +68,43 @@ test('event folding keeps cumulative usage and final text', () => {
   assert.equal(aggregate.toolErrors, 1)
   assert.equal(aggregate.thinkingChars, 3)
   assert.equal(aggregate.textChars, 5)
-  assert.equal(aggregate.usage.inputTokens, 12)
-  assert.equal(aggregate.usage.outputTokens, 8)
-  assert.equal(aggregate.usage.totalTokens, 19)
+  assert.equal(aggregate.usage.inputTokens, 22)
+  assert.equal(aggregate.usage.outputTokens, 15)
+  assert.equal(aggregate.usage.totalTokens, 37)
+  assert.equal(aggregate.usage.reasoningTokens, 3)
   assert.equal(aggregate.endReason, 'stop')
   assert.equal(aggregate.finalText, 'done')
+})
+
+test('event projections tolerate JSON values that are not event objects', () => {
+  const aggregate = createAggregate()
+  for (const value of [null, false, 42, 'diagnostic', []]) {
+    assert.doesNotThrow(() => fold(aggregate, value))
+    assert.equal(typeof compact(value), 'string')
+  }
+})
+
+test('CLI discovery resolves a symlinked host entry and honors configured paths', { skip: process.platform === 'win32' }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qdc-bin-'))
+  const previous = process.argv[1]
+  try {
+    const cliDir = join(dir, '@deepseek-ai', 'dsh', 'lib')
+    await mkdir(cliDir, { recursive: true })
+    const entry = join(cliDir, 'bin.js')
+    await writeFile(entry, '')
+    const link = join(dir, 'dsh')
+    await symlink(entry, link)
+    process.argv[1] = link
+    assert.deepEqual(resolveDshBin(), { bin: await realpath(entry), source: 'host-entry', reason: undefined })
+    const configured = join(dir, 'custom-cli.mjs')
+    await writeFile(configured, '')
+    assert.equal(resolveDshBin(configured).bin, await realpath(configured))
+    process.argv[1] = join(dir, 'missing')
+    assert.notEqual(resolveDshBin().source, 'host-entry')
+  } finally {
+    process.argv[1] = previous
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test('compact projections hide bulky thinking text', () => {

@@ -10,6 +10,14 @@ Windows 默认路径：
 C:/Users/<you>/AppData/Local/Programs/DeepSeek Harness/resources/runtime/cli/bin/dsh.cmd
 ```
 
+macOS 默认安装位置的 CLI 包装器：
+
+```text
+/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh
+```
+
+macOS 设置 `DSH` 为上述路径，后续安装参数中的 `C:/path/to/…` 替换为本机绝对路径。安装前确认 `pnpm --version` 可执行；插件安装命令依赖 PATH 中的 pnpm。
+
 ```bash
 DSH="C:/Users/<you>/AppData/Local/Programs/DeepSeek Harness/resources/runtime/cli/bin/dsh.cmd"
 "$DSH" --version
@@ -55,9 +63,9 @@ done
 Qoder 侧连接时把 `QODER_DSH_CONNECT_URL` 设为桌面端实际地址；token 通过
 `QODER_DSH_CONNECT_TOKEN` 提供。
 
-如果 `/status` 显示 `ready:false`，说明宿主没有自动解析到 dsh CLI。把插件配置的 `bin` 指向
-桌面端 runtime 里的 `@deepseek-ai/dsh/lib/bin.js`；不要指向 `.cmd` 包装器（实验室只接受
-`bin.js`，因为子进程使用 `process.execPath` + argv 启动）。
+如果 `/status` 显示 `ready:false`，说明宿主没有解析到可直接运行的 dsh JavaScript 入口。插件配置的 `bin` 必须是可由宿主 `process.execPath` 执行的入口文件，不能指向 `.cmd` 或 shell 包装器。
+
+macOS Desktop 把 CLI 放在 `app.asar` 内，通过 Electron 包装器启动，当前自动发现尚不支持这种启动方式。若使用独立安装的 npm CLI，可显式配置其 `@deepseek-ai/dsh/lib/bin.js` 绝对路径，并先确认版本与执行环境；桌面端委派仍需实际启动验证。本轮源码检查和假 dsh 测试不代表 Desktop 已验证。
 
 ## 注意
 

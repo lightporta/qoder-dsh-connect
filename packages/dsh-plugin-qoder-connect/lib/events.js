@@ -13,7 +13,7 @@ export function createAggregate() {
     sessionId: undefined,
     finalText: undefined,
     endReason: undefined,
-    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0 },
+    usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, totalTokens: 0 },
   }
 }
 
@@ -24,6 +24,7 @@ function oneLine(value, max) {
 
 export function fold(aggregate, event) {
   aggregate.eventCount += 1
+  if (event === null || typeof event !== 'object') return
   switch (event.type) {
     case 'session':
       if (typeof event.sessionId === 'string') aggregate.sessionId = event.sessionId
@@ -34,7 +35,8 @@ export function fold(aggregate, event) {
       if (event.phase === 'step_end' && event.usage !== null && typeof event.usage === 'object') {
         for (const key of Object.keys(aggregate.usage)) {
           const value = Number(event.usage[key])
-          if (Number.isFinite(value)) aggregate.usage[key] = Math.max(aggregate.usage[key], value)
+          // The headless stream resets its usage counters after each step_end.
+          if (Number.isFinite(value) && value >= 0) aggregate.usage[key] += value
         }
       }
       if (event.phase === 'turn_end' && event.reason !== undefined) aggregate.endReason = event.reason
@@ -60,6 +62,7 @@ export function fold(aggregate, event) {
 }
 
 export function compact(event) {
+  if (event === null || typeof event !== 'object') return oneLine(JSON.stringify(event), MAX_LINE_CHARS)
   switch (event.type) {
     case 'session':
       return `session ${event.sessionId ?? '?'}`

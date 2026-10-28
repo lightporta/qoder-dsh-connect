@@ -43,7 +43,7 @@ dsh plugin --profile web add "file:C:/path/to/qoder-dsh-connect/packages/dsh-plu
 | POST | `/lab/install` | `{ path, profile, mode? }` |
 | POST | `/lab/uninstall` | `{ name, profile }` |
 | POST | `/lab/restore` | `{ backupId, confirm }` |
-| POST | `/lab/verify` | `{ profile, boot? }` |
+| POST | `/lab/verify` | `{ profile, name?, boot? }` |
 
 完整请求/响应与错误码见 [../../docs/api.md](../../docs/api.md)。
 

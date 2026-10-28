@@ -164,3 +164,81 @@ test('MCP stdio server exposes tools and calls status', async () => {
     server.close()
   }
 })
+
+test('CLI reads a UTF-8 task and learning body from stdin', async () => {
+  const { server, base, seen } = await serve()
+  async function invoke(args, text) {
+    const child = spawn(process.execPath, [BIN, ...args, '--url', base], { stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    const done = new Promise((resolve, reject) => {
+      child.once('error', reject)
+      child.once('close', code => resolve({ code, stdout, stderr }))
+    })
+    child.stdin.end(text)
+    return done
+  }
+  try {
+    const run = await invoke(['run', '-', '--wait', '0'], '请回复收到🌙\n')
+    assert.equal(run.code, 0, run.stderr)
+    assert.equal(JSON.parse(run.stdout).request.task, '请回复收到🌙\n')
+    // The fixture rejects this endpoint; the recorded body still proves stdin reached HTTP.
+    const learned = await invoke(['learn', '--title', 'test', '--body', '-'], '中文学习正文\n')
+    assert.equal(learned.code, 1)
+    const request = seen.find(entry => entry.url.includes('/learnings'))
+    assert.equal(JSON.parse(request.body).body, '中文学习正文')
+  } finally {
+    server.close()
+  }
+})
+
+test('client keeps the transport error contract when the response body disconnects', async () => {
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.write('{"partial":')
+    setTimeout(() => res.destroy(), 20)
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const client = await createClient({ url: `http://127.0.0.1:${server.address().port}` })
+    await assert.rejects(() => client.status(), error => error instanceof ConnectError && error.status === 0)
+  } finally {
+    server.close()
+  }
+})
+
+test('client long polling reserves time for the requested wait', async () => {
+  const server = createServer((req, res) => {
+    setTimeout(() => res.end(JSON.stringify({ id: 'run-1', status: 'running' })), 50)
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const client = await createClient({ url: `http://127.0.0.1:${server.address().port}`, timeoutMs: 5 })
+    assert.equal((await client.get('run-1', { wait: 100 })).status, 'running')
+  } finally {
+    server.close()
+  }
+})
+
+test('client rejects fractional and overflowing request timeout values by using the default', async () => {
+  for (const timeoutMs of [0.5, 2147483648, 4294967296, Infinity]) {
+    assert.equal((await resolveOptions({ timeoutMs })).timeoutMs, 135000)
+  }
+})
+
+test('non-object client config values fall back to an empty config', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'qdc-config-shape-'))
+  const config = join(dir, 'client.json')
+  try {
+    for (const value of [null, [], 42, true, 'config']) {
+      await writeFile(config, JSON.stringify(value))
+      const resolved = await resolveOptions({ config, url: 'http://127.0.0.1:3080' })
+      assert.equal(resolved.baseUrl, 'http://127.0.0.1:3080')
+      assert.equal(resolved.timeoutMs, 135000)
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

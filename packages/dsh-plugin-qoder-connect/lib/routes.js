@@ -12,6 +12,7 @@ class RequestError extends Error {
 }
 
 function write(res, status, body, type) {
+  if (res.destroyed || res.writableEnded) return
   const isText = type !== undefined && !type.startsWith('application/json')
   const payload = isText ? String(body) : JSON.stringify(body)
   res.writeHead(status, {
@@ -26,17 +27,25 @@ function write(res, status, body, type) {
 async function readJson(req, limit) {
   const chunks = []
   let size = 0
-  for await (const chunk of req) {
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     size += chunk.length
-    if (size > limit) throw new RequestError(413, `request body too large (max ${limit} bytes)`)
+    if (size > limit) {
+      req.resume()
+      throw new RequestError(413, `request body too large (max ${limit} bytes)`)
+    }
     chunks.push(chunk)
   }
   if (size === 0) return undefined
+  let body
   try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
   } catch {
     throw new RequestError(400, 'request body is not valid JSON')
   }
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    throw new RequestError(400, 'request body must be a JSON object')
+  }
+  return body
 }
 
 function intParam(params, key, fallback, max, min = 0) {
@@ -116,11 +125,14 @@ export function makeRoute(deps) {
     return run
   }
 
-  async function answerRun(res, run, params) {
-    const waitMs = intParam(params, 'wait', 0, DEFAULTS.maxWaitMs)
-    const settled = waitMs > 0 ? await engine.wait(run, waitMs) : run
+  function runOptions(params) {
     const tail = flag(params, 'raw') ? 0 : intParam(params, 'tail', config.tailLines, 1000)
-    write(res, settled.status === 'running' ? 202 : 200, engine.view(settled, { tail, full: flag(params, 'full') }))
+    return { waitMs: intParam(params, 'wait', 0, DEFAULTS.maxWaitMs), tail, full: flag(params, 'full') }
+  }
+
+  async function answerRun(res, run, options) {
+    const settled = options.waitMs > 0 ? await engine.wait(run, options.waitMs) : run
+    write(res, settled.status === 'running' ? 202 : 200, engine.view(settled, options))
   }
 
   async function labResult(res, result) {
@@ -141,14 +153,16 @@ export function makeRoute(deps) {
         return
       }
 
-      const url = new URL(req.url ?? '/', 'http://localhost')
-      const method = req.method ?? 'GET'
-      const sub = url.pathname.slice(API_ROOT.length).replace(/^\/+|\/+$/g, '')
-      const segments = sub.length === 0 ? [] : sub.split('/')
-      const params = url.searchParams
-
       try {
-        if (segments.length === 0 || segments[0] === 'status') {
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        const method = req.method ?? 'GET'
+        if (url.pathname !== API_ROOT && !url.pathname.startsWith(`${API_ROOT}/`)) {
+          throw new RequestError(404, 'unknown API path')
+        }
+        const sub = url.pathname.slice(API_ROOT.length).replace(/^\/+|\/+$/g, '')
+        const segments = sub.length === 0 ? [] : sub.split('/')
+        const params = url.searchParams
+        if (segments.length === 0 || (segments.length === 1 && segments[0] === 'status')) {
           if (method !== 'GET') throw new RequestError(405, `method not allowed: ${method}`)
           status(res)
           return
@@ -160,13 +174,14 @@ export function makeRoute(deps) {
               if (method === 'GET') {
                 const limit = intParam(params, 'limit', 20, 100)
                 const liveOnly = flag(params, 'live')
-                const listed = engine.list(limit).filter(run => !liveOnly || run.status === 'running')
+                const listed = engine.list(limit, { liveOnly })
                 write(res, 200, { count: listed.length, live: engine.liveCount(), runs: listed })
                 return
               }
               if (method === 'POST') {
                 const body = await readJson(req, BODY_LIMITS.run) ?? {}
                 if (body.wait !== undefined && !params.has('wait')) params.set('wait', String(body.wait))
+                const options = runOptions(params)
                 const started = engine.start({
                   task: body.task,
                   cwd: body.cwd,
@@ -178,17 +193,18 @@ export function makeRoute(deps) {
                   write(res, started.status ?? 400, { error: started.error })
                   return
                 }
-                await answerRun(res, started.run, params)
+                await answerRun(res, started.run, options)
                 return
               }
               throw new RequestError(405, `method not allowed: ${method}`)
             }
 
+            if (segments.length > 3) throw new RequestError(404, `unknown path: ${sub}`)
             const run = expectRun(segments[1])
             const action = segments[2]
             if (action === undefined) {
               if (method !== 'GET') throw new RequestError(405, `method not allowed: ${method}`)
-              await answerRun(res, run, params)
+              await answerRun(res, run, runOptions(params))
               return
             }
             if (action === 'kill') {
@@ -227,8 +243,7 @@ export function makeRoute(deps) {
             if (method === 'GET') {
               const limit = intParam(params, 'limit', 50, 500)
               const topic = textParam(params, 'topic')
-              const all = await store.listLearnings(limit)
-              const kept = topic === undefined ? all : all.filter(record => record.topic === topic)
+              const kept = await store.listLearnings(limit, { topic })
               write(res, 200, { count: kept.length, learnings: kept.slice().reverse() })
               return
             }
@@ -246,11 +261,12 @@ export function makeRoute(deps) {
             if (segments.length !== 1) throw new RequestError(404, `unknown path: ${sub}`)
             if (method !== 'GET') throw new RequestError(405, `method not allowed: ${method}`)
             const limit = intParam(params, 'limit', 50, 500)
-            const [runs, learnings] = await Promise.all([store.listRuns(limit), store.listLearnings(limit)])
+            const topic = textParam(params, 'topic')
+            const [runs, learnings] = await Promise.all([store.listRuns(limit), store.listLearnings(limit, { topic })])
             const digest = renderDigest({
               runs,
               learnings,
-              topic: textParam(params, 'topic'),
+              topic,
               results: flag(params, 'results'),
             })
             write(res, 200, digest, 'text/markdown; charset=utf-8')
@@ -258,6 +274,7 @@ export function makeRoute(deps) {
           }
 
           case 'market': {
+            if (segments.length !== 2) throw new RequestError(404, `unknown path: ${sub}`)
             if (method !== 'GET') throw new RequestError(405, `method not allowed: ${method}`)
             const action = segments[1]
             if (action === 'sources' || action === 'indexes') {
@@ -294,6 +311,7 @@ export function makeRoute(deps) {
           }
 
           case 'lab': {
+            if (segments.length > 2) throw new RequestError(404, `unknown path: ${sub}`)
             const action = segments[1]
             if (action === undefined) {
               if (method !== 'GET') throw new RequestError(405, `method not allowed: ${method}`)

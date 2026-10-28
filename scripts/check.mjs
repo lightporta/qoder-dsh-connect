@@ -12,6 +12,8 @@ async function walk(dir) {
   const files = []
   for (const entry of entries) {
     if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'test-output.log') continue
+    // Local deployment simulations contain external runtimes, not project sources.
+    if (dir === root && entry.name === 'sim') continue
     const path = join(dir, entry.name)
     if (entry.isDirectory()) files.push(...await walk(path))
     else if (entry.isFile()) files.push(path)

@@ -7,11 +7,11 @@
 ```yaml
 lab:
   enabled: false
-  dir: ~/.qoder-dsh-connect/lab
+  dir: /absolute/path/to/lab   # 可省略，默认用户主目录下的 .qoder-dsh-connect/lab
   profiles: []                 # 空 = 谁都不允许写
   allowCurrentProfile: false
   currentProfile: web
-  dshHome: ~/.dsh
+  dshHome: /absolute/path/to/.dsh  # 可省略，默认 $DSH_HOME 或用户主目录下的 .dsh
   timeoutMs: 180000
 ```
 
@@ -69,6 +69,8 @@ Skill 检查：
 
 ### 3. Install
 
+配置路径应使用绝对路径，字符串里的 `~` 不会自动展开。所有实验室命令都会设置 `DSH_HOME` 为已检查和备份的 `lab.dshHome`，确保实际修改同一个环境。
+
 ```json
 { "path": "…/lab/plugins/my-plugin", "profile": "qoder-lab", "mode": "file" }
 ```
@@ -83,8 +85,11 @@ Skill 检查：
 
 ### 4. Verify
 
-- `boot:false`（默认）：运行 `dsh --profile <profile> --dump-config`，返回配置里的插件 id、stderr 告警、是否出现 `patch: entry` / `did not activate`。
-- `boot:true`：临时启动 host，解析 `dsh web: http://127.0.0.1:<port>/?token=…`，GET 一次，然后终止整个进程树。目标 profile 需要 web app；纯 headless/minimal profile 不适合 boot 验证。
+- `boot:false`（默认）：运行 `dsh --profile <profile> --dump-config`，只收集顶层未禁用的插件 id。用 `name` 指定预期插件，缺失时返回 `ok:false`、`missing`。
+- 未传 `name` 时，从最近 500 条操作推断该 profile 最近一次未卸载的成功安装；无法推断时只验证 profile 配置。验证特定插件时应显式传 `name`。
+- `boot:true`：先做上述配置验证，通过后临时启动 host，解析 `dsh web: http://127.0.0.1:<port>/?token=…`，GET 一次，然后终止整个进程树。目标 profile 需要 web app；纯 headless/minimal profile 不适合 boot 验证。
+
+结果中的 `verificationScope` 表明本次检查范围。配置存在和 host 可访问均不能证明插件已在运行时激活。
 
 ### 5. Learn / Export
 
@@ -114,7 +119,7 @@ Skill 检查：
 { "backupId": "20261020-…-qoder-lab-abc123", "confirm": "20261020-…-qoder-lab-abc123" }
 ```
 
-恢复前会再创建一个 `pre-restore` 备份，避免“回滚本身丢失当前状态”。
+恢复前会再创建一个 `pre-restore` 备份。恢复会移除备份时原本不存在、后来新增的四类配置文件，并在 `removed` 字段列出。实验室的改写操作和验证按顺序执行，避免并发安装与恢复交错。
 
 ## Skill 闭环
 

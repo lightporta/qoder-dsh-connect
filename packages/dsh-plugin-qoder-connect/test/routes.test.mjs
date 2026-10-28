@@ -227,3 +227,76 @@ test('routes enforce the loopback origin fence and the optional token', async ()
     await tokenHost.close()
   }
 })
+
+test('routes validate run queries and body shapes before starting a child', async () => {
+  const host = await makeHost()
+  try {
+    for (const path of ['/runs?wait=invalid', '/runs?tail=-1']) {
+      const response = await json(host.base, path, { method: 'POST', body: JSON.stringify({ task: 'SLOW invalid' }) })
+      assert.equal(response.status, 400)
+    }
+    for (const body of ['null', '[]', 'true', '"task"', '{"task":"SLOW invalid","wait":"invalid"}']) {
+      assert.equal((await json(host.base, '/runs', { method: 'POST', body })).status, 400)
+    }
+    assert.equal(host.engine.liveCount(), 0)
+    assert.equal(host.engine.list(100).length, 0)
+
+    for (const path of ['/status/extra', '/market/sources/extra', '/lab/install/extra']) {
+      assert.equal((await json(host.base, path, { method: path.startsWith('/lab/') ? 'POST' : 'GET' })).status, 404)
+    }
+    assert.equal((await json(host.base, '-other/status')).status, 404)
+  } finally {
+    await host.close()
+  }
+})
+
+test('routes send a readable 413 response for an oversized body', async () => {
+  const host = await makeHost()
+  try {
+    const response = await json(host.base, '/runs', { method: 'POST', body: JSON.stringify({ task: 'x'.repeat(70 * 1024) }) })
+    assert.equal(response.status, 413)
+    assert.match(response.body.error, /request body too large/)
+    assert.equal(host.engine.list(100).length, 0)
+  } finally {
+    await host.close()
+  }
+})
+
+test('live runs are filtered before pagination and invalid kill paths cannot kill them', async () => {
+  const host = await makeHost()
+  try {
+    const live = await json(host.base, '/runs', { method: 'POST', body: JSON.stringify({ task: 'SLOW task' }) })
+    assert.equal(live.status, 202)
+    const completed = await json(host.base, '/runs?wait=10000', { method: 'POST', body: JSON.stringify({ task: 'hello' }) })
+    assert.equal(completed.body.status, 'completed')
+    const listed = await json(host.base, '/runs?live=1&limit=1')
+    assert.equal(listed.body.count, 1)
+    assert.equal(listed.body.runs[0].id, live.body.id)
+    assert.equal((await json(host.base, `/runs/${live.body.id}/kill/extra`, { method: 'POST' })).status, 404)
+    assert.equal(host.engine.find(live.body.id).status, 'running')
+  } finally {
+    await host.close()
+  }
+})
+
+test('topic queries and exports apply their limit to matching learning records', async () => {
+  const host = await makeHost()
+  try {
+    for (const note of [
+      { title: 'Older wanted note', topic: 'wanted' },
+      { title: 'Latest wanted note', topic: 'wanted' },
+      { title: 'Other topic note', topic: 'other' },
+    ]) {
+      const response = await json(host.base, '/learnings', { method: 'POST', body: JSON.stringify({ ...note, body: 'A saved note' }) })
+      assert.equal(response.status, 201)
+    }
+    const response = await json(host.base, '/learnings?topic=wanted&limit=1')
+    assert.equal(response.body.count, 1)
+    assert.equal(response.body.learnings[0].title, 'Latest wanted note')
+    const digest = await (await fetch(`${host.base}/export?topic=wanted&limit=1`)).text()
+    assert.match(digest, /Latest wanted note/)
+    assert.doesNotMatch(digest, /Older wanted note|Other topic note/)
+  } finally {
+    await host.close()
+  }
+})
