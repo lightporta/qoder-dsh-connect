@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased — 2026-10-29
+
+- 修复 Windows CI 的 cwd 测试误判：实际路径与预期路径都经过 realpath，再比较目录，兼容 8.3 短路径和长路径；仍保留目录一致性检查。
+
 ## Unreleased — 2026-10-28
 
 - 修复 MCP 中文字节帧、stdin 任务读取、长任务期间状态/终止请求阻塞，以及 HTTP 长轮询超时与断流错误处理。

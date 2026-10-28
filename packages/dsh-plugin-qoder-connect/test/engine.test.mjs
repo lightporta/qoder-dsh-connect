@@ -153,7 +153,8 @@ test('launch passes task bytes through stdin and pins cwd while preserving host 
     const captured = JSON.parse(context.engine.view(run).result)
     assert.equal(captured.task, task)
     assert.deepEqual(captured.args, ['--profile', 'headless', '--json', '--session-id', 'session-resume', '-'])
-    assert.equal(captured.cwd, await realpath(context.dir))
+    // Windows may report an inherited 8.3 short path for the same directory.
+    assert.equal(await realpath(captured.cwd), await realpath(context.dir))
     assert.equal(captured.marker, 'inherited-for-launch-test')
   } finally {
     if (previous === undefined) delete process.env.QDC_LAUNCH_TEST
